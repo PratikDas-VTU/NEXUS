@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { IncidentItem } from '../types';
+import { useNexusServices } from '../context/ServiceContext';
 
 interface IncidentManagerProps {
   incidents: IncidentItem[];
@@ -21,6 +22,7 @@ export const IncidentManager: React.FC<IncidentManagerProps> = ({
   onResolveIncident,
   onShowToast,
 }) => {
+  const { purgeDemoData } = useNexusServices();
   const [showAddModal, setShowAddModal] = useState(false);
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [newTitle, setNewTitle] = useState('');
@@ -78,13 +80,26 @@ export const IncidentManager: React.FC<IncidentManagerProps> = ({
           </p>
         </div>
 
-        <button
-          onClick={() => setShowAddModal(true)}
-          className="px-4 py-2 rounded-xl bg-[#3e90ff] hover:bg-[#327ce0] text-[#002957] font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-[#3e90ff]/20 cursor-pointer transition-all active:scale-95 shrink-0"
-        >
-          <span className="material-symbols-outlined text-[18px]">campaign</span>
-          <span>Broadcast New Emergency</span>
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={async () => {
+              await purgeDemoData();
+              onShowToast('✓ All demo incidents purged. Offline vault reset.');
+            }}
+            className="px-3.5 py-2 rounded-xl bg-[#2b1616] hover:bg-[#3f1919] text-[#ffb4ab] font-bold text-xs flex items-center justify-center gap-1.5 border border-[#ffb4ab]/30 cursor-pointer transition-all active:scale-95 shadow-sm"
+            title="One-Click Purge Demo Incidents"
+          >
+            <span className="material-symbols-outlined text-[16px]">delete_sweep</span>
+            <span>Purge Data</span>
+          </button>
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="px-4 py-2 rounded-xl bg-[#3e90ff] hover:bg-[#327ce0] text-[#002957] font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-[#3e90ff]/20 cursor-pointer transition-all active:scale-95"
+          >
+            <span className="material-symbols-outlined text-[18px]">campaign</span>
+            <span>Broadcast New Emergency</span>
+          </button>
+        </div>
       </div>
 
       {/* Filter Chips */}

@@ -32,6 +32,7 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
     refreshPermissions,
     requestPermission,
     testBluetooth,
+    purgeDemoData,
   } = useNexusServices();
 
   const [profile, setProfile] = useState<DeviceProfile>(initialDeviceProfile);
@@ -633,6 +634,17 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
           <span>
             {testSignalSending ? 'Transmitting...' : 'Send Emergency Test Signal'}
           </span>
+        </button>
+
+        <button
+          onClick={async () => {
+            await purgeDemoData();
+            onShowToast('✓ All demo incidents purged. Offline vault reset.');
+          }}
+          className="w-full h-12 rounded-2xl bg-[#2b1717] hover:bg-[#3a1d1d] active:scale-[0.98] transition-all border border-[#ffb4ab]/30 text-[#ffb4ab] font-semibold text-[14px] flex items-center justify-center gap-2 cursor-pointer shadow-md"
+        >
+          <span className="material-symbols-outlined text-[20px]">delete_sweep</span>
+          <span>Purge Demo Incidents (Reset Vault)</span>
         </button>
       </div>
 

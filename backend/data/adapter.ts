@@ -97,7 +97,7 @@ export class OfflineStorageAdapter implements IOfflineStorageAdapter, ISharedOff
     };
   }
 
-  private notifyStorageChange(): void {
+  public notifyStorageChange(): void {
     for (const listener of this.changeListeners) {
       try {
         listener();

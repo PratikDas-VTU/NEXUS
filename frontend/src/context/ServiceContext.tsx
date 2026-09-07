@@ -43,6 +43,7 @@ interface ServiceContextValue {
   updateIncidentStatus: (id: string, newStatus: IncidentStatus) => Promise<void>;
   refreshIncidents: () => Promise<void>;
   refreshOutboxCount: () => Promise<void>;
+  purgeDemoData: () => Promise<void>;
   toggleInternet: (enable: boolean) => Promise<void>;
 
   // Location Core
@@ -159,6 +160,19 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       console.error('[ServiceProvider] Failed to refresh incidents:', e);
     }
   }, [incidentService]);
+
+  const purgeDemoData = useCallback(async () => {
+    try {
+      await database.incidents.clear();
+      await database.outbox.clear();
+      setRawIncidents([]);
+      setIncidents([]);
+      setOutboxCount(0);
+      storageAdapter.notifyStorageChange();
+    } catch (e) {
+      console.error('[ServiceProvider] Failed to purge demo data:', e);
+    }
+  }, [database, storageAdapter]);
 
   // Subscribe to network status & trigger immediate incident refresh on peer relay sync
   useEffect(() => {
@@ -373,6 +387,7 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     updateIncidentStatus,
     refreshIncidents,
     refreshOutboxCount,
+    purgeDemoData,
     toggleInternet,
 
     // Hardware & Network Diagnostics

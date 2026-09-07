@@ -55,6 +55,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     outboxCount,
     reconnectSignaler,
     refreshIncidents,
+    purgeDemoData,
   } = useNexusServices();
 
   const [activeNav, setActiveNav] = useState<AdminNavTab>('overview');
@@ -305,6 +306,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               title="Refresh Dashboard"
             >
               <span className="material-symbols-outlined text-[18px]">refresh</span>
+            </button>
+
+            {/* One-Click Purge Demo Data */}
+            <button
+              onClick={async () => {
+                await purgeDemoData();
+                onShowToast('✓ All demo incidents purged. Offline vault reset.');
+              }}
+              className="px-2.5 py-1.5 rounded-xl bg-[#2b1616] hover:bg-[#3f1919] border border-[#ffb4ab]/30 text-[#ffb4ab] text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+              title="One-Click Purge Demo Data"
+            >
+              <span className="material-symbols-outlined text-[16px]">delete_sweep</span>
+              <span className="hidden sm:inline">Purge Demo Data</span>
             </button>
 
             {/* User Profile & Logout */}
@@ -953,12 +967,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       Active Database: <code className="text-[#aac7ff]">NexusLocalDB</code> · {incidents.length} incidents · {outboxCount} in outbox
                     </span>
                   </div>
-                  <button
-                    onClick={() => onShowToast('IndexedDB storage verified and healthy')}
-                    className="px-3 py-1.5 rounded-xl bg-[#202028] text-xs font-semibold text-[#aac7ff] hover:bg-[#282834] cursor-pointer"
-                  >
-                    Check Storage
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => onShowToast('IndexedDB storage verified and healthy')}
+                      className="px-3 py-1.5 rounded-xl bg-[#202028] text-xs font-semibold text-[#aac7ff] hover:bg-[#282834] cursor-pointer"
+                    >
+                      Check Storage
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await purgeDemoData();
+                        onShowToast('✓ All demo incidents purged. Offline vault reset.');
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-[#2b1616] hover:bg-[#3f1919] border border-[#ffb4ab]/40 text-xs font-semibold text-[#ffb4ab] cursor-pointer"
+                    >
+                      Purge Demo Data
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
