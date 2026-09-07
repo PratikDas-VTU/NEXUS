@@ -19,7 +19,19 @@ function AppContent() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isInternetConnected, setIsInternetConnected] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<'field' | 'admin-login' | 'admin'>('field');
-  const [adminUser, setAdminUser] = useState<AdminUser | null>(null);
+  const [adminUser, setAdminUser] = useState<AdminUser | null>(() => {
+    if (typeof sessionStorage !== 'undefined') {
+      const saved = sessionStorage.getItem('nexus_admin_user');
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch {
+          // ignore parsing errors
+        }
+      }
+    }
+    return null;
+  });
 
   useEffect(() => {
     const checkUrlRoute = () => {
@@ -178,6 +190,9 @@ function AppContent() {
 
   const handleAdminLoginSuccess = (user: AdminUser) => {
     setAdminUser(user);
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem('nexus_admin_user', JSON.stringify(user));
+    }
     if (typeof window !== 'undefined') {
       window.location.hash = '#admin';
     }
@@ -187,6 +202,9 @@ function AppContent() {
 
   const handleAdminLogout = () => {
     setAdminUser(null);
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem('nexus_admin_user');
+    }
     if (typeof window !== 'undefined') {
       window.location.hash = '#field';
     }

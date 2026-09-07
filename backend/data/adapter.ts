@@ -84,9 +84,27 @@ export type AdapterIngestResult = IngestResult & IngestionResult;
  */
 export class OfflineStorageAdapter implements IOfflineStorageAdapter, ISharedOfflineStorageAdapter {
   private database: NexusDatabase;
+  private changeListeners: Set<() => void> = new Set();
 
   constructor(database: NexusDatabase = db) {
     this.database = database;
+  }
+
+  public onStorageChange(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => {
+      this.changeListeners.delete(listener);
+    };
+  }
+
+  private notifyStorageChange(): void {
+    for (const listener of this.changeListeners) {
+      try {
+        listener();
+      } catch (err) {
+        console.error('[OfflineStorageAdapter] Listener error:', err);
+      }
+    }
   }
 
   async getManifest(): Promise<ManifestItem[]> {
@@ -130,6 +148,9 @@ export class OfflineStorageAdapter implements IOfflineStorageAdapter, ISharedOff
       typeof incident === 'object' && incident !== null && 'incidentId' in incident
         ? String((incident as any).incidentId)
         : '';
+    if (res.accepted) {
+      this.notifyStorageChange();
+    }
     return {
       accepted: res.accepted,
       incidentId,
@@ -140,7 +161,8 @@ export class OfflineStorageAdapter implements IOfflineStorageAdapter, ISharedOff
   }
 
   async markRelayed(incidentId: string, peerId: string): Promise<void> {
-    return markOutboxRelayed(incidentId, peerId, this.database);
+    await markOutboxRelayed(incidentId, peerId, this.database);
+    this.notifyStorageChange();
   }
 
   async hasIncident(incidentId: string, version?: number): Promise<boolean> {

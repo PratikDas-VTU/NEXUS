@@ -54,6 +54,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     deviceId,
     outboxCount,
     reconnectSignaler,
+    refreshIncidents,
   } = useNexusServices();
 
   const [activeNav, setActiveNav] = useState<AdminNavTab>('overview');
@@ -296,7 +297,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             {/* Quick Refresh */}
             <button
-              onClick={() => onShowToast('Dexie storage & WebRTC channels verified')}
+              onClick={() => {
+                refreshIncidents();
+                onShowToast('Dexie storage & WebRTC channels synchronized');
+              }}
               className="p-2 rounded-xl bg-[#18181c] hover:bg-[#222228] border border-[#28282e] text-[#c0c6d6] cursor-pointer"
               title="Refresh Dashboard"
             >

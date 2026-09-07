@@ -41,6 +41,7 @@ interface ServiceContextValue {
   deviceId: string;
   createIncident: (draft: DraftIncident) => Promise<Incident>;
   updateIncidentStatus: (id: string, newStatus: IncidentStatus) => Promise<void>;
+  refreshIncidents: () => Promise<void>;
   refreshOutboxCount: () => Promise<void>;
   toggleInternet: (enable: boolean) => Promise<void>;
 
@@ -137,13 +138,36 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     initDevice();
   }, [database, nodeParam, coordinator, deviceId]);
 
-  // Subscribe to network status
+  const refreshOutboxCount = useCallback(async () => {
+    try {
+      const count = await incidentService.getOutboxCount();
+      setOutboxCount(count);
+    } catch (e) {
+      console.error('[ServiceProvider] Failed to get outbox count:', e);
+    }
+  }, [incidentService]);
+
+  const refreshIncidents = useCallback(async () => {
+    try {
+      const items = await incidentService.listIncidents();
+      setRawIncidents(items);
+      const viewModels = items.map((inc) => incidentToViewModel(inc));
+      setIncidents(viewModels);
+      const count = await incidentService.getOutboxCount();
+      setOutboxCount(count);
+    } catch (e) {
+      console.error('[ServiceProvider] Failed to refresh incidents:', e);
+    }
+  }, [incidentService]);
+
+  // Subscribe to network status & trigger immediate incident refresh on peer relay sync
   useEffect(() => {
     const unsub = networkService.subscribeStatus((status) => {
       setNetworkStatus(status);
+      refreshIncidents();
     });
     return unsub;
-  }, [networkService]);
+  }, [networkService, refreshIncidents]);
 
   // Subscribe to real-time network diagnostics
   useEffect(() => {
@@ -153,16 +177,24 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return unsub;
   }, [coordinator]);
 
-  const refreshOutboxCount = async () => {
-    try {
-      const count = await incidentService.getOutboxCount();
-      setOutboxCount(count);
-    } catch (e) {
-      console.error('[ServiceProvider] Failed to get outbox count:', e);
-    }
-  };
+  // 1. Reactive Storage Adapter Listener (triggers immediately when WebRTC peer delivers incident)
+  useEffect(() => {
+    const unsub = storageAdapter.onStorageChange(() => {
+      refreshIncidents();
+    });
+    return unsub;
+  }, [storageAdapter, refreshIncidents]);
 
-  // Subscribe to real Dexie incidents (no fake seeding)
+  // 2. Continuous Background Heartbeat (ensures immediate synchronization if WebRTC events fire outside microtask)
+  useEffect(() => {
+    refreshIncidents();
+    const interval = setInterval(() => {
+      refreshIncidents();
+    }, 1500);
+    return () => clearInterval(interval);
+  }, [refreshIncidents]);
+
+  // 3. Subscribe to real Dexie incidents liveQuery
   useEffect(() => {
     let isSubscribed = true;
 
@@ -180,7 +212,7 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       isSubscribed = false;
       unsub();
     };
-  }, [incidentService]);
+  }, [incidentService, refreshOutboxCount]);
 
   useEffect(() => {
     coordinator.start().catch((err) => {
@@ -314,13 +346,13 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const createIncident = async (draft: DraftIncident): Promise<Incident> => {
     const inc = await incidentService.createIncident(draft);
-    await refreshOutboxCount();
+    await refreshIncidents();
     return inc;
   };
 
   const updateIncidentStatus = async (id: string, newStatus: IncidentStatus): Promise<void> => {
     await incidentService.updateIncidentStatus(id, newStatus);
-    await refreshOutboxCount();
+    await refreshIncidents();
   };
 
   const reconnectSignaler = useCallback(async (customUrl?: string) => {
@@ -339,6 +371,7 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     deviceId,
     createIncident,
     updateIncidentStatus,
+    refreshIncidents,
     refreshOutboxCount,
     toggleInternet,
 
