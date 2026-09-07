@@ -93,4 +93,22 @@
   scrollbar-width: none;
 }
 
+/* Leaflet Dark Tactical Map Customizations */
+.leaflet-container {
+  width: 100% !important;
+  height: 100% !important;
+  background-color: #0e0e0e !important;
+  font-family: inherit !important;
+  z-index: 0 !important;
+}
+
+.leaflet-control-container {
+  display: none !important;
+}
+
+.custom-leaflet-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
 

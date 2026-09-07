@@ -1,6 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { MapBeacon, IncidentItem } from '../types';
-import { mapBackgroundUrl } from '../data/mockData';
 import { getCurrentPosition } from '../services/api/geolocation';
 
 interface MapTabProps {
@@ -9,55 +10,42 @@ interface MapTabProps {
 }
 
 export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) => {
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapInstanceRef = useRef<L.Map | null>(null);
+  const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const userMarkerRef = useRef<L.Marker | null>(null);
+  const userCircleRef = useRef<L.Circle | null>(null);
+  const incidentMarkersRef = useRef<Map<string, L.Marker>>(new Map());
+  const navRouteRef = useRef<L.Polyline | null>(null);
+  const meshLinesRef = useRef<L.Polyline | null>(null);
+
   const [selectedBeaconId, setSelectedBeaconId] = useState<string>('');
   const [isSpinningRecenter, setIsSpinningRecenter] = useState<boolean>(false);
   const [isNavigating, setIsNavigating] = useState<boolean>(false);
-  const [showLayers, setShowLayers] = useState<boolean>(true);
+  const [isSatelliteLayer, setIsSatelliteLayer] = useState<boolean>(false);
   const [showSearch, setShowSearch] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showInfoModal, setShowInfoModal] = useState<boolean>(false);
   const [pingActive, setPingActive] = useState<boolean>(false);
   const [isSheetCollapsed, setIsSheetCollapsed] = useState<boolean>(false);
-  const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [userLocation, setUserLocation] = useState<{
     latitude: number;
     longitude: number;
     accuracy?: number;
   } | null>(null);
 
-  // Reference center point
-  const centerLat = userLocation?.latitude ?? (incidents.length > 0 && incidents[0].latitude ? incidents[0].latitude : 12.9716);
-  const centerLng = userLocation?.longitude ?? (incidents.length > 0 && incidents[0].longitude ? incidents[0].longitude : 77.5946);
-
-  // Dynamically map real incidents from Dexie to tactical map beacons
+  // Convert raw incidents into typed MapBeacon view models
   const dynamicBeacons: MapBeacon[] = useMemo(() => {
     if (!incidents || incidents.length === 0) return [];
 
-    const latSpan = 0.04;
-    const lngSpan = 0.04;
-
-    return incidents.map((inc, idx) => {
-      let topPerc = 50;
-      let leftPerc = 50;
-
-      if (inc.latitude !== undefined && inc.longitude !== undefined) {
-        const dLat = inc.latitude - centerLat;
-        const dLng = inc.longitude - centerLng;
-        // Invert dLat because latitude increases northwards (top decreases)
-        topPerc = Math.max(14, Math.min(82, 50 - (dLat / latSpan) * 36));
-        leftPerc = Math.max(12, Math.min(88, 50 + (dLng / lngSpan) * 36));
-      } else {
-        topPerc = 25 + ((idx * 17) % 55);
-        leftPerc = 20 + ((idx * 23) % 65);
-      }
-
+    return incidents.map((inc) => {
       const beaconType: 'amber' | 'blue' | 'critical' =
         inc.badgeColor === 'error' ? 'critical' : inc.badgeColor === 'amber' ? 'amber' : 'blue';
 
       return {
         id: inc.id,
         type: beaconType,
-        label: inc.title.slice(0, 16),
+        label: inc.title.slice(0, 18),
         title: inc.title,
         category: inc.category,
         sector: inc.location,
@@ -65,8 +53,8 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
         walkTime: '4m walk',
         threatLevel: inc.badgeColor === 'error' ? 'P0 Critical' : inc.badgeColor === 'amber' ? 'P1 Urgent' : 'P2 Standard',
         pos: {
-          top: `${topPerc.toFixed(1)}%`,
-          left: `${leftPerc.toFixed(1)}%`,
+          top: '50%',
+          left: '50%',
         },
         responders: {
           initials: ['NX', 'R1'],
@@ -74,23 +62,282 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
         },
       };
     });
-  }, [incidents, centerLat, centerLng]);
+  }, [incidents]);
 
   const selectedBeacon: MapBeacon | null = useMemo(() => {
     if (dynamicBeacons.length === 0) return null;
     return dynamicBeacons.find((b) => b.id === selectedBeaconId) || dynamicBeacons[0];
   }, [dynamicBeacons, selectedBeaconId]);
 
+  // Selected incident raw item
+  const selectedIncident = useMemo(() => {
+    if (!selectedBeacon) return null;
+    return incidents.find((i) => i.id === selectedBeacon.id) || null;
+  }, [selectedBeacon, incidents]);
+
+  // 1. Initialize Leaflet Map once
+  useEffect(() => {
+    if (!mapContainerRef.current || mapInstanceRef.current) return;
+
+    // Default reference center if GPS not yet acquired
+    const initialLat = incidents.length > 0 && incidents[0].latitude ? incidents[0].latitude : 13.0827;
+    const initialLng = incidents.length > 0 && incidents[0].longitude ? incidents[0].longitude : 80.2707;
+
+    const map = L.map(mapContainerRef.current, {
+      center: [initialLat, initialLng],
+      zoom: 14,
+      zoomControl: false,
+      attributionControl: false,
+    });
+
+    // Dark Matter tile layer (matches tactical theme, real global street map)
+    const darkTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19,
+      subdomains: 'abcd',
+    }).addTo(map);
+
+    tileLayerRef.current = darkTiles;
+    mapInstanceRef.current = map;
+
+    // Auto-locate user on mount
+    getCurrentPosition({ enableHighAccuracy: true, timeout: 8000 })
+      .then((pos) => {
+        if (pos.success && pos.coords) {
+          setUserLocation(pos.coords);
+          map.flyTo([pos.coords.latitude, pos.coords.longitude], 15, { duration: 1 });
+        }
+      })
+      .catch(() => {});
+
+    // Invalidate size on resize
+    const resizeObserver = new ResizeObserver(() => {
+      map.invalidateSize();
+    });
+    resizeObserver.observe(mapContainerRef.current);
+
+    return () => {
+      resizeObserver.disconnect();
+      map.remove();
+      mapInstanceRef.current = null;
+    };
+  }, []);
+
+  // 2. Toggle tile layer (Dark Tactical vs OSM Street)
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+    const map = mapInstanceRef.current;
+
+    if (tileLayerRef.current) {
+      map.removeLayer(tileLayerRef.current);
+    }
+
+    const url = isSatelliteLayer
+      ? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+      : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+
+    const subdomains = isSatelliteLayer ? 'abc' : 'abcd';
+
+    tileLayerRef.current = L.tileLayer(url, {
+      maxZoom: 19,
+      subdomains,
+    }).addTo(map);
+  }, [isSatelliteLayer]);
+
+  // 3. Update User Location Marker & Accuracy Circle
+  useEffect(() => {
+    if (!mapInstanceRef.current || !userLocation) return;
+    const map = mapInstanceRef.current;
+
+    const userHtml = `
+      <div class="relative flex items-center justify-center w-8 h-8">
+        <span class="animate-ping absolute inline-flex h-8 w-8 rounded-full bg-[#3e90ff] opacity-40"></span>
+        <span class="relative flex items-center justify-center w-5 h-5 rounded-full bg-[#1c1b1b] shadow-lg border-2 border-white">
+          <span class="w-2.5 h-2.5 rounded-full bg-[#3e90ff] shadow-[0_0_10px_#3e90ff]"></span>
+        </span>
+      </div>
+    `;
+
+    const userIcon = L.divIcon({
+      className: 'custom-leaflet-marker',
+      html: userHtml,
+      iconSize: [32, 32],
+      iconAnchor: [16, 16],
+    });
+
+    if (!userMarkerRef.current) {
+      userMarkerRef.current = L.marker([userLocation.latitude, userLocation.longitude], {
+        icon: userIcon,
+        zIndexOffset: 1000,
+      }).addTo(map);
+    } else {
+      userMarkerRef.current.setLatLng([userLocation.latitude, userLocation.longitude]);
+    }
+
+    if (userLocation.accuracy) {
+      if (!userCircleRef.current) {
+        userCircleRef.current = L.circle([userLocation.latitude, userLocation.longitude], {
+          radius: Math.min(userLocation.accuracy, 250),
+          color: '#3e90ff',
+          fillColor: '#3e90ff',
+          fillOpacity: 0.1,
+          weight: 1,
+        }).addTo(map);
+      } else {
+        userCircleRef.current.setLatLng([userLocation.latitude, userLocation.longitude]);
+        userCircleRef.current.setRadius(Math.min(userLocation.accuracy, 250));
+      }
+    }
+  }, [userLocation]);
+
+  // 4. Update Incident Markers on Map
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+    const map = mapInstanceRef.current;
+    const existingMarkers = incidentMarkersRef.current;
+
+    // Track active ids to remove stale ones
+    const currentIds = new Set(incidents.map((i) => i.id));
+
+    // Remove deleted incidents
+    for (const [id, marker] of existingMarkers.entries()) {
+      if (!currentIds.has(id)) {
+        map.removeLayer(marker);
+        existingMarkers.delete(id);
+      }
+    }
+
+    // Add or update markers
+    incidents.forEach((inc) => {
+      if (inc.latitude === undefined || inc.longitude === undefined) return;
+
+      const isSelected = selectedBeacon?.id === inc.id;
+      const isCritical = inc.badgeColor === 'error';
+      const isAmber = inc.badgeColor === 'amber';
+
+      const markerHtml = `
+        <div class="flex flex-col items-center group cursor-pointer transition-transform duration-200 ${
+          isSelected ? 'scale-125' : 'hover:scale-110'
+        }">
+          <div class="relative flex items-center justify-center w-10 h-10">
+            ${
+              isCritical
+                ? `
+                <span class="absolute w-11 h-11 rounded-full bg-[#ffb4ab]/35 animate-ping"></span>
+                <span class="absolute w-8 h-8 rounded-full bg-[#93000a]/60"></span>
+                <span class="relative flex items-center justify-center w-7 h-7 rounded-full bg-[#1c1b1b] shadow-2xl border-2 border-[#ffb4ab]">
+                  <span class="w-3.5 h-3.5 rounded-full bg-[#ef4444] shadow-[0_0_16px_#ef4444] animate-pulse"></span>
+                </span>
+                `
+                : isAmber
+                ? `
+                <span class="animate-ping absolute inline-flex h-8 w-8 rounded-full bg-amber-500 opacity-40"></span>
+                <span class="relative flex items-center justify-center w-7 h-7 rounded-full bg-[#1c1b1b] shadow-lg border-2 border-amber-400">
+                  <span class="w-3.5 h-3.5 rounded-full bg-amber-400 shadow-[0_0_12px_#f59e0b]"></span>
+                </span>
+                `
+                : `
+                <span class="relative flex items-center justify-center w-7 h-7 rounded-full bg-[#3e90ff]/20 backdrop-blur-sm border-2 border-[#aac7ff]">
+                  <span class="w-3.5 h-3.5 rounded-full bg-[#aac7ff] shadow-[0_0_12px_#3e90ff]"></span>
+                </span>
+                `
+            }
+          </div>
+          <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold whitespace-nowrap shadow-md mt-0.5 border ${
+            isCritical
+              ? 'bg-[#93000a]/95 text-[#ffdad6] border-[#ffb4ab]/50'
+              : isAmber
+              ? 'bg-[#1c1b1b]/95 text-amber-300 border-amber-500/50'
+              : 'bg-[#1c1b1b]/95 text-[#aac7ff] border-[#3e90ff]/50'
+          }">${inc.title.slice(0, 16)}</span>
+        </div>
+      `;
+
+      const markerIcon = L.divIcon({
+        className: 'custom-leaflet-marker',
+        html: markerHtml,
+        iconSize: [44, 48],
+        iconAnchor: [22, 24],
+      });
+
+      if (existingMarkers.has(inc.id)) {
+        const marker = existingMarkers.get(inc.id)!;
+        marker.setLatLng([inc.latitude, inc.longitude]);
+        marker.setIcon(markerIcon);
+        marker.setZIndexOffset(isSelected ? 900 : 100);
+      } else {
+        const marker = L.marker([inc.latitude, inc.longitude], {
+          icon: markerIcon,
+          zIndexOffset: isSelected ? 900 : 100,
+        }).addTo(map);
+
+        marker.on('click', () => {
+          setSelectedBeaconId(inc.id);
+          setIsSheetCollapsed(false);
+          map.panTo([inc.latitude, inc.longitude]);
+        });
+
+        existingMarkers.set(inc.id, marker);
+      }
+    });
+
+    // Mesh interlink polylines between active incident nodes
+    const validCoords: [number, number][] = incidents
+      .filter((i) => i.latitude !== undefined && i.longitude !== undefined)
+      .map((i) => [i.latitude!, i.longitude!]);
+
+    if (validCoords.length >= 2) {
+      if (!meshLinesRef.current) {
+        meshLinesRef.current = L.polyline(validCoords, {
+          color: '#aac7ff',
+          dashArray: '4, 6',
+          weight: 1.5,
+          opacity: 0.35,
+        }).addTo(map);
+      } else {
+        meshLinesRef.current.setLatLngs(validCoords);
+      }
+    } else if (meshLinesRef.current) {
+      map.removeLayer(meshLinesRef.current);
+      meshLinesRef.current = null;
+    }
+  }, [incidents, selectedBeacon]);
+
+  // 5. Navigation Route Line
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+    const map = mapInstanceRef.current;
+
+    if (isNavigating && userLocation && selectedIncident && selectedIncident.latitude && selectedIncident.longitude) {
+      const routeCoords: [number, number][] = [
+        [userLocation.latitude, userLocation.longitude],
+        [selectedIncident.latitude, selectedIncident.longitude],
+      ];
+
+      if (!navRouteRef.current) {
+        navRouteRef.current = L.polyline(routeCoords, {
+          color: '#3e90ff',
+          dashArray: '8, 6',
+          weight: 3.5,
+          opacity: 0.85,
+        }).addTo(map);
+      } else {
+        navRouteRef.current.setLatLngs(routeCoords);
+      }
+    } else if (navRouteRef.current) {
+      map.removeLayer(navRouteRef.current);
+      navRouteRef.current = null;
+    }
+  }, [isNavigating, userLocation, selectedIncident]);
+
   const handleRecenter = async () => {
     setIsSpinningRecenter(true);
     try {
-      const pos = await getCurrentPosition();
+      const pos = await getCurrentPosition({ enableHighAccuracy: true, timeout: 10000 });
       if (pos.success && pos.coords) {
-        setUserLocation({
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-        });
+        setUserLocation(pos.coords);
+        if (mapInstanceRef.current) {
+          mapInstanceRef.current.flyTo([pos.coords.latitude, pos.coords.longitude], 16, { duration: 1.2 });
+        }
         onShowToast(`GPS locked: ${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)} (±${pos.coords.accuracy}m)`);
       } else {
         onShowToast(`GPS notice: ${pos.error || 'Coordinates unavailable'}`);
@@ -99,20 +346,19 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
       onShowToast('Could not acquire GPS position');
     } finally {
       setIsSpinningRecenter(false);
-      setZoomLevel(1);
     }
   };
 
   const handleZoomIn = () => {
-    const next = Math.min(zoomLevel + 0.25, 1.75);
-    setZoomLevel(next);
-    onShowToast(`Tactical zoom: ${Math.round(next * 100)}%`);
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.zoomIn();
+    }
   };
 
   const handleZoomOut = () => {
-    const next = Math.max(zoomLevel - 0.25, 0.85);
-    setZoomLevel(next);
-    onShowToast(`Tactical zoom: ${Math.round(next * 100)}%`);
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.zoomOut();
+    }
   };
 
   const handleToggleNav = () => {
@@ -139,163 +385,14 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
 
   return (
     <div className="flex flex-col w-full h-full flex-1 min-h-0 relative overflow-hidden select-none bg-[#0e0e0e]">
-      {/* Map Canvas Simulation with Zoom capability */}
+      {/* Real Dynamic Leaflet Map Container */}
       <div
-        className="absolute inset-0 w-full h-full bg-[#0e0e0e] bg-cover bg-center transition-transform duration-300 origin-center"
-        style={{
-          backgroundImage: `url('${mapBackgroundUrl}')`,
-          transform: `scale(${zoomLevel})`,
-        }}
-      >
-        {/* Subtle Tactical Vector Linework & Elevation Contours Overlay */}
-        {showLayers && (
-          <svg className="absolute inset-0 w-full h-full opacity-35 pointer-events-none" height="100%" width="100%" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <pattern height="48" id="tactical-grid" patternUnits="userSpaceOnUse" width="48">
-                <path d="M 48 0 L 0 0 0 48" fill="none" stroke="#aac7ff" strokeOpacity="0.15" strokeWidth="0.3" />
-                <circle cx="24" cy="24" fill="#aac7ff" fillOpacity="0.2" r="0.75" />
-              </pattern>
-            </defs>
-            <rect fill="url(#tactical-grid)" height="100%" width="100%" />
-
-            {/* Topographic Contour Silhouettes */}
-            <path d="M-50,220 C100,180 180,260 320,210 C460,160 540,240 600,200" fill="none" stroke="#aac7ff" strokeDasharray="4 6" strokeOpacity="0.1" strokeWidth="0.8" />
-            <path d="M-30,340 C80,310 210,380 360,330 C490,280 570,360 620,320" fill="none" stroke="#aac7ff" strokeDasharray="4 6" strokeOpacity="0.1" strokeWidth="0.8" />
-            <path d="M-20,460 C120,430 240,510 390,470 C510,420 580,520 640,480" fill="none" stroke="#aac7ff" strokeDasharray="2 4" strokeOpacity="0.08" strokeWidth="0.8" />
-
-            {/* Dynamic mesh vectors if multiple beacons exist */}
-            {dynamicBeacons.length >= 2 && (
-              <polyline
-                points={dynamicBeacons.map(b => `${b.pos.left},${b.pos.top}`).join(' ')}
-                fill="none"
-                stroke="#aac7ff"
-                strokeDasharray="4 4"
-                strokeOpacity="0.3"
-                strokeWidth="1.2"
-              />
-            )}
-
-            {/* Simulated Active Route path when navigating */}
-            {isNavigating && selectedBeacon && (
-              <line
-                x1="50%"
-                y1="50%"
-                x2={selectedBeacon.pos.left}
-                y2={selectedBeacon.pos.top}
-                stroke="#3e90ff"
-                strokeWidth="3.5"
-                strokeDasharray="8 4"
-                className="animate-pulse"
-              />
-            )}
-          </svg>
-        )}
-
-        {/* User's Current GPS Location Dot */}
-        {(() => {
-          const latSpan = 0.04;
-          const lngSpan = 0.04;
-          const userTop = userLocation ? Math.max(10, Math.min(90, 50 - ((userLocation.latitude - centerLat) / latSpan) * 36)) : 50;
-          const userLeft = userLocation ? Math.max(10, Math.min(90, 50 + ((userLocation.longitude - centerLng) / lngSpan) * 36)) : 50;
-
-          return (
-            <div
-              className="absolute z-20 -translate-x-1/2 -translate-y-1/2 pointer-events-none transition-all duration-500"
-              style={{ top: `${userTop}%`, left: `${userLeft}%` }}
-            >
-              <div className="relative flex items-center justify-center w-10 h-10">
-                <span className="animate-ping absolute inline-flex h-8 w-8 rounded-full bg-[#3e90ff] opacity-40" />
-                <span className="relative flex items-center justify-center w-5 h-5 rounded-full bg-[#1c1b1b] shadow-lg border-2 border-white">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#3e90ff] shadow-[0_0_10px_#3e90ff]" />
-                </span>
-              </div>
-              <span className="absolute top-9 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full bg-[#131313]/90 backdrop-blur-md text-[#aac7ff] font-semibold text-[10px] whitespace-nowrap shadow-md border border-[#3e90ff]/40">
-                {userLocation ? `My GPS (±${userLocation.accuracy ?? 10}m)` : 'My Location'}
-              </span>
-            </div>
-          );
-        })()}
-
-        {/* Real Dynamic Incident Beacons */}
-        {dynamicBeacons.map((beacon) => {
-          const isSelected = selectedBeacon?.id === beacon.id;
-          const isCritical = beacon.type === 'critical';
-          const isAmber = beacon.type === 'amber';
-
-          return (
-            <button
-              key={beacon.id}
-              aria-label={`Incident: ${beacon.title}`}
-              onClick={() => {
-                setSelectedBeaconId(beacon.id);
-                setIsSheetCollapsed(false);
-              }}
-              style={{
-                top: beacon.pos.top,
-                left: beacon.pos.left,
-              }}
-              className={`group absolute -translate-x-1/2 -translate-y-1/2 focus:outline-none cursor-pointer z-15 transition-transform ${
-                isSelected ? 'scale-125 z-25' : 'hover:scale-110'
-              }`}
-              type="button"
-            >
-              <span className="relative flex items-center justify-center w-11 h-11">
-                {isCritical && (
-                  <>
-                    <span className="absolute w-12 h-12 rounded-full bg-[#ffb4ab]/30 animate-ping" />
-                    <span className="absolute w-8 h-8 rounded-full bg-[#93000a]/50" />
-                    <span className="relative flex items-center justify-center w-7 h-7 rounded-full bg-[#1c1b1b] shadow-2xl border-2 border-[#ffb4ab]">
-                      <span className="w-3 h-3 rounded-full bg-[#ef4444] shadow-[0_0_16px_#ef4444] animate-pulse" />
-                    </span>
-                  </>
-                )}
-                {isAmber && (
-                  <>
-                    <span className="animate-ping absolute inline-flex h-8 w-8 rounded-full bg-amber-500 opacity-40" />
-                    <span className="relative flex items-center justify-center w-7 h-7 rounded-full bg-[#1c1b1b] shadow-lg border-2 border-amber-400">
-                      <span className="w-3 h-3 rounded-full bg-amber-400 shadow-[0_0_12px_#f59e0b]" />
-                    </span>
-                  </>
-                )}
-                {!isCritical && !isAmber && (
-                  <span className="relative flex items-center justify-center w-7 h-7 rounded-full bg-[#3e90ff]/20 backdrop-blur-sm border-2 border-[#aac7ff]">
-                    <span className="w-3 h-3 rounded-full bg-[#aac7ff] shadow-[0_0_12px_#3e90ff]" />
-                  </span>
-                )}
-              </span>
-              <span
-                className={`absolute top-10 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full backdrop-blur-md text-[10.5px] whitespace-nowrap shadow-md border font-semibold ${
-                  isCritical
-                    ? 'bg-[#93000a]/95 text-[#ffdad6] border-[#ffb4ab]/40'
-                    : isAmber
-                    ? 'bg-[#1c1b1b]/95 text-amber-300 border-amber-500/40'
-                    : 'bg-[#1c1b1b]/95 text-[#aac7ff] border-[#3e90ff]/40'
-                }`}
-              >
-                {beacon.label}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Empty State Banner when no incidents in Dexie */}
-      {dynamicBeacons.length === 0 && (
-        <div className="absolute top-20 inset-x-4 z-20 flex flex-col items-center justify-center py-4 px-5 rounded-2xl bg-[#1c1b1b]/90 backdrop-blur-md border border-[#2a2a2a] text-center shadow-xl">
-          <div className="w-9 h-9 rounded-full bg-[#201f1f] flex items-center justify-center text-[#8b91a0] mb-2">
-            <span className="material-symbols-outlined text-[20px]">radar</span>
-          </div>
-          <span className="text-[13px] font-bold text-[#e5e2e1] uppercase tracking-wider mb-0.5">
-            No reported incidents nearby
-          </span>
-          <p className="text-[11.5px] text-[#8b91a0] max-w-[260px] leading-relaxed">
-            Perimeter clear. Reports created on this node or received via mesh will populate here in real-time.
-          </p>
-        </div>
-      )}
+        ref={mapContainerRef}
+        className="absolute inset-0 w-full h-full z-0 bg-[#0e0e0e]"
+      />
 
       {/* Top Gradient Scrim */}
-      <div className="pointer-events-none absolute top-0 inset-x-0 h-28 bg-gradient-to-b from-[#131313]/90 via-[#131313]/40 to-transparent" />
+      <div className="pointer-events-none absolute top-0 inset-x-0 h-28 bg-gradient-to-b from-[#131313]/90 via-[#131313]/40 to-transparent z-10" />
 
       {/* Top Controls Header */}
       <div className="absolute top-3 inset-x-3 flex flex-col gap-2 z-20 pointer-events-none">
@@ -303,7 +400,11 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
           {/* Status Chip */}
           <div className="pointer-events-auto flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#1c1b1b]/95 backdrop-blur-xl shadow-lg border border-[#2a2a2a]">
             <span className="w-2 h-2 rounded-full bg-[#47e266] animate-pulse" />
-            <span className="text-[12px] text-[#e5e2e1] font-semibold">Offline Tactical Map</span>
+            <span className="text-[12px] text-[#e5e2e1] font-semibold">
+              {userLocation
+                ? `GPS: ${userLocation.latitude.toFixed(3)}, ${userLocation.longitude.toFixed(3)}`
+                : 'Offline Tactical Map'}
+            </span>
           </div>
 
           {/* Right Controls Stack */}
@@ -345,19 +446,20 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
               </button>
             )}
 
-            {/* Layers Pill */}
+            {/* Layers Toggle (Dark Tactical vs OSM Street) */}
             <button
-              aria-label="Toggle tactical layers"
+              aria-label="Toggle map layer style"
               onClick={() => {
-                setShowLayers(!showLayers);
-                onShowToast(showLayers ? 'Vector overlay hidden' : 'Topographic contours displayed');
+                const next = !isSatelliteLayer;
+                setIsSatelliteLayer(next);
+                onShowToast(next ? 'Street Map tiles active' : 'Dark Tactical map active');
               }}
               className={`w-9 h-9 rounded-xl backdrop-blur-xl shadow-md flex items-center justify-center transition-all active:scale-95 cursor-pointer border ${
-                showLayers ? 'bg-[#2a2a2a] text-[#aac7ff] border-[#3e90ff]/50' : 'bg-[#1c1b1b]/90 text-[#8b91a0] border-[#2a2a2a]'
+                isSatelliteLayer ? 'bg-[#2a2a2a] text-[#aac7ff] border-[#3e90ff]/50' : 'bg-[#1c1b1b]/90 text-[#8b91a0] border-[#2a2a2a]'
               }`}
               id="layer-btn"
               type="button"
-              title="Toggle Grid & Contours"
+              title="Toggle Map Style"
             >
               <span className="material-symbols-outlined text-[18px]">layers</span>
             </button>
@@ -391,6 +493,10 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
                   onClick={() => {
                     setSelectedBeaconId(beacon.id);
                     setIsSheetCollapsed(false);
+                    const inc = incidents.find((i) => i.id === beacon.id);
+                    if (inc && inc.latitude !== undefined && inc.longitude !== undefined && mapInstanceRef.current) {
+                      mapInstanceRef.current.flyTo([inc.latitude, inc.longitude], 15, { duration: 0.8 });
+                    }
                   }}
                   className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold transition-all whitespace-nowrap cursor-pointer border shadow-sm ${
                     isSelected
@@ -412,6 +518,21 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
           </div>
         )}
       </div>
+
+      {/* Empty State Banner when no incidents in Dexie */}
+      {dynamicBeacons.length === 0 && (
+        <div className="absolute top-20 inset-x-4 z-20 flex flex-col items-center justify-center py-4 px-5 rounded-2xl bg-[#1c1b1b]/90 backdrop-blur-md border border-[#2a2a2a] text-center shadow-xl">
+          <div className="w-9 h-9 rounded-full bg-[#201f1f] flex items-center justify-center text-[#8b91a0] mb-2">
+            <span className="material-symbols-outlined text-[20px]">radar</span>
+          </div>
+          <span className="text-[13px] font-bold text-[#e5e2e1] uppercase tracking-wider mb-0.5">
+            No reported incidents nearby
+          </span>
+          <p className="text-[11.5px] text-[#8b91a0] max-w-[260px] leading-relaxed">
+            Perimeter clear. Reports created on this node or received via mesh will populate on the map in real-time.
+          </p>
+        </div>
+      )}
 
       {/* Quick Search Overlay */}
       {showSearch && dynamicBeacons.length > 0 && (
@@ -438,6 +559,10 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
                   setSelectedBeaconId(b.id);
                   setShowSearch(false);
                   setIsSheetCollapsed(false);
+                  const inc = incidents.find(i => i.id === b.id);
+                  if (inc && inc.latitude !== undefined && inc.longitude !== undefined && mapInstanceRef.current) {
+                    mapInstanceRef.current.flyTo([inc.latitude, inc.longitude], 15, { duration: 0.8 });
+                  }
                 }}
                 className="p-2 rounded-lg hover:bg-[#2a2a2a] text-xs text-[#e5e2e1] flex items-center justify-between cursor-pointer"
               >
