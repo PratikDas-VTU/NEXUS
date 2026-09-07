@@ -5,6 +5,18 @@ import { MapBeacon, IncidentItem } from '../types';
 import { getCurrentPosition } from '../services/api/geolocation';
 import { getMapTileConfig } from '../services/api/config';
 import { useNexusServices } from '../context/ServiceContext';
+import {
+  DEMO_MESH_NODES,
+  DEMO_REFERENCE_LOCATION,
+  getDemoMeshEdges,
+  calculateDistanceMeters,
+  formatGeographicDistance,
+  isDemoMeshEnabled,
+  setDemoMeshEnabled,
+  type DemoMeshNode,
+  type DemoMeshEdge,
+} from '../services/demoMeshVisualization';
+import { useNearbyMesh } from '../hooks/useNearbyMesh';
 
 interface MapTabProps {
   onShowToast: (msg: string) => void;
@@ -17,7 +29,8 @@ export const MapTab: React.FC<MapTabProps> = ({
   incidents = [],
   recalibrateSignal,
 }) => {
-  const { currentLocation, requestLocation } = useNexusServices();
+  const { currentLocation, requestLocation, deviceId } = useNexusServices();
+  const nearby = useNearbyMesh({ localDeviceId: deviceId });
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const [map, setMap] = useState<L.Map | null>(null);
@@ -28,10 +41,21 @@ export const MapTab: React.FC<MapTabProps> = ({
   const navRouteRef = useRef<L.Polyline | null>(null);
   const meshLinesRef = useRef<L.Polyline | null>(null);
 
+  // Demo Mesh & Real Peer Visualization Refs & State
+  const demoMarkersRef = useRef<Map<string, L.Marker>>(new Map());
+  const demoEdgesRef = useRef<L.Polyline[]>([]);
+  const demoDistanceLabelsRef = useRef<L.Marker[]>([]);
+  const realPeerMarkersRef = useRef<Map<string, L.Marker>>(new Map());
+  const realPeerLinesRef = useRef<L.Polyline[]>([]);
+
+  const [showDemoMesh, setShowDemoMesh] = useState<boolean>(() => isDemoMeshEnabled());
+  const [selectedDemoNodeId, setSelectedDemoNodeId] = useState<string | null>(null);
+  const [selectedRealPeerId, setSelectedRealPeerId] = useState<string | null>(null);
+
   const [selectedBeaconId, setSelectedBeaconId] = useState<string>('');
   const [isSpinningRecenter, setIsSpinningRecenter] = useState<boolean>(false);
   const [isNavigating, setIsNavigating] = useState<boolean>(false);
-  const [isSatelliteLayer, setIsSatelliteLayer] = useState<boolean>(false);
+  const [isDarkTacticalLayer, setIsDarkTacticalLayer] = useState<boolean>(false);
   const [showSearch, setShowSearch] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showInfoModal, setShowInfoModal] = useState<boolean>(false);
@@ -73,10 +97,38 @@ export const MapTab: React.FC<MapTabProps> = ({
     });
   }, [incidents]);
 
+  const selectedDemoNode = useMemo<DemoMeshNode | null>(() => {
+    if (!showDemoMesh || !selectedDemoNodeId) return null;
+    return DEMO_MESH_NODES.find((n) => n.id === selectedDemoNodeId) || null;
+  }, [showDemoMesh, selectedDemoNodeId]);
+
+  const demoAnchorCoords: [number, number] = useMemo(() => {
+    return userLocation
+      ? [userLocation.latitude, userLocation.longitude]
+      : [DEMO_REFERENCE_LOCATION.latitude, DEMO_REFERENCE_LOCATION.longitude];
+  }, [userLocation]);
+
+  const demoNodeDistanceToAnchor = useMemo(() => {
+    if (!selectedDemoNode) return null;
+    const d = calculateDistanceMeters(
+      demoAnchorCoords[0],
+      demoAnchorCoords[1],
+      selectedDemoNode.latitude,
+      selectedDemoNode.longitude
+    );
+    return formatGeographicDistance(d);
+  }, [selectedDemoNode, demoAnchorCoords]);
+
+  const selectedRealPeer = useMemo(() => {
+    if (!selectedRealPeerId) return null;
+    return nearby.connectedNodes.find((p) => p.endpointId === selectedRealPeerId) || null;
+  }, [selectedRealPeerId, nearby.connectedNodes]);
+
   const selectedBeacon: MapBeacon | null = useMemo(() => {
+    if (selectedDemoNodeId || selectedRealPeerId) return null;
     if (dynamicBeacons.length === 0) return null;
-    return dynamicBeacons.find((b) => b.id === selectedBeaconId) || dynamicBeacons[0];
-  }, [dynamicBeacons, selectedBeaconId]);
+    return dynamicBeacons.find((b) => b.id === selectedBeaconId) || (selectedBeaconId ? null : dynamicBeacons[0]);
+  }, [dynamicBeacons, selectedBeaconId, selectedDemoNodeId, selectedRealPeerId]);
 
   // Selected incident raw item
   const selectedIncident = useMemo(() => {
@@ -111,15 +163,15 @@ export const MapTab: React.FC<MapTabProps> = ({
       attributionControl: false,
     });
 
-    // Dark Tactical tile layer (Default: Esri Dark Canvas - 100% Free, Zero Key, Zero Watermark)
-    const initialConfig = getMapTileConfig('dark');
-    const darkTiles = L.tileLayer(initialConfig.url, {
+    // Default layer: OpenStreetMap Standard Street (100% Free, Zero Key, Zero Watermark)
+    const initialConfig = getMapTileConfig('street');
+    const streetTiles = L.tileLayer(initialConfig.url, {
       maxZoom: initialConfig.maxZoom,
       subdomains: (initialConfig.subdomains as any) || 'abc',
       attribution: initialConfig.attribution,
     }).addTo(leafletInstance);
 
-    tileLayerRef.current = darkTiles;
+    tileLayerRef.current = streetTiles;
     mapInstanceRef.current = leafletInstance;
     setMap(leafletInstance);
 
@@ -159,7 +211,7 @@ export const MapTab: React.FC<MapTabProps> = ({
     };
   }, []);
 
-  // 2. Toggle tile layer (Dark Tactical vs OSM Street)
+  // 2. Toggle tile layer (OpenStreetMap Street vs Dark Tactical)
   useEffect(() => {
     if (!map) return;
 
@@ -167,13 +219,13 @@ export const MapTab: React.FC<MapTabProps> = ({
       map.removeLayer(tileLayerRef.current);
     }
 
-    const config = getMapTileConfig(isSatelliteLayer ? 'street' : 'dark');
+    const config = getMapTileConfig(isDarkTacticalLayer ? 'dark' : 'street');
     tileLayerRef.current = L.tileLayer(config.url, {
       maxZoom: config.maxZoom,
       subdomains: (config.subdomains as any) || 'abc',
       attribution: config.attribution,
     }).addTo(map);
-  }, [map, isSatelliteLayer]);
+  }, [map, isDarkTacticalLayer]);
 
   // 3. Update User Location Marker & Accuracy Circle
   useEffect(() => {
@@ -359,7 +411,233 @@ export const MapTab: React.FC<MapTabProps> = ({
     }
   }, [map, isNavigating, userLocation, selectedIncident]);
 
-  // Fit perimeter across all nodes
+  // 6. Update Demo Mesh Markers and Edges (Dashed Purple: Rule 9 & 10)
+  useEffect(() => {
+    if (!map) return;
+
+    const existingDemoMarkers = demoMarkersRef.current;
+
+    if (!showDemoMesh) {
+      // Clean up all demo markers
+      for (const [id, marker] of existingDemoMarkers.entries()) {
+        map.removeLayer(marker);
+      }
+      existingDemoMarkers.clear();
+
+      // Clean up all demo edges
+      demoEdgesRef.current.forEach((polyline) => {
+        map.removeLayer(polyline);
+      });
+      demoEdgesRef.current = [];
+
+      // Clean up all demo distance labels
+      demoDistanceLabelsRef.current.forEach((labelMarker) => {
+        map.removeLayer(labelMarker);
+      });
+      demoDistanceLabelsRef.current = [];
+      return;
+    }
+
+    // Render 3 Deterministic Demo Nodes
+    DEMO_MESH_NODES.forEach((node) => {
+      const isSelected = selectedDemoNodeId === node.id;
+
+      const markerHtml = `
+        <div class="flex flex-col items-center group cursor-pointer transition-transform duration-200 ${
+          isSelected ? 'scale-125' : 'hover:scale-110'
+        }">
+          <div class="relative flex items-center justify-center w-10 h-10">
+            <span class="absolute w-10 h-10 rounded-full bg-[#a855f7]/25 animate-pulse"></span>
+            <span class="relative flex items-center justify-center w-7 h-7 rounded-full bg-[#1c1b1b] shadow-xl border-2 border-dashed ${
+              isSelected ? 'border-[#e9d5ff] scale-105' : 'border-[#c084fc]'
+            }">
+              <span class="w-3 h-3 rounded-full bg-[#c084fc] shadow-[0_0_12px_#a855f7]"></span>
+            </span>
+          </div>
+          <span class="px-2 py-0.5 rounded-full text-[9px] font-bold font-mono whitespace-nowrap shadow-md mt-0.5 bg-[#2e1065]/95 text-[#d8b4fe] border border-[#a855f7]/50">
+            ${node.label}
+          </span>
+        </div>
+      `;
+
+      const markerIcon = L.divIcon({
+        className: 'custom-leaflet-marker',
+        html: markerHtml,
+        iconSize: [44, 48],
+        iconAnchor: [22, 24],
+      });
+
+      if (existingDemoMarkers.has(node.id)) {
+        const marker = existingDemoMarkers.get(node.id)!;
+        marker.setLatLng([node.latitude, node.longitude]);
+        marker.setIcon(markerIcon);
+        marker.setZIndexOffset(isSelected ? 950 : 150);
+      } else {
+        const marker = L.marker([node.latitude, node.longitude], {
+          icon: markerIcon,
+          zIndexOffset: isSelected ? 950 : 150,
+        }).addTo(map);
+
+        marker.on('click', () => {
+          setSelectedDemoNodeId(node.id);
+          setSelectedBeaconId('');
+          setSelectedRealPeerId(null);
+          setIsSheetCollapsed(false);
+          map.panTo([node.latitude, node.longitude]);
+        });
+
+        existingDemoMarkers.set(node.id, marker);
+      }
+    });
+
+    // Render Demo Topology Edges (Dashed Purple: rule 9 & 10) & Distance Labels
+    const anchorCoords: [number, number] = userLocation
+      ? [userLocation.latitude, userLocation.longitude]
+      : [DEMO_REFERENCE_LOCATION.latitude, DEMO_REFERENCE_LOCATION.longitude];
+
+    const edges = getDemoMeshEdges(anchorCoords);
+
+    // Remove old polylines
+    demoEdgesRef.current.forEach((p) => map.removeLayer(p));
+    demoEdgesRef.current = [];
+
+    // Remove old distance labels
+    demoDistanceLabelsRef.current.forEach((l) => map.removeLayer(l));
+    demoDistanceLabelsRef.current = [];
+
+    // Create new polylines and distance labels for each demo edge
+    edges.forEach((edge) => {
+      const polyline = L.polyline([edge.fromCoords, edge.toCoords], {
+        color: '#a855f7',
+        dashArray: '4, 8',
+        weight: 2,
+        opacity: 0.7,
+      }).addTo(map);
+
+      demoEdgesRef.current.push(polyline);
+
+      // Render subtle geographic distance label at edge midpoint
+      const labelHtml = `
+        <div class="px-1.5 py-0.5 rounded-md text-[9px] font-mono font-bold tracking-tight shadow-md whitespace-nowrap bg-[#1c1b1b]/95 text-[#d8b4fe] border border-[#a855f7]/50 backdrop-blur-md pointer-events-none flex items-center gap-1 select-none">
+          <span class="w-1.5 h-1.5 rounded-full bg-[#c084fc]"></span>
+          <span>${edge.formattedDistance}</span>
+        </div>
+      `;
+
+      const labelIcon = L.divIcon({
+        className: 'custom-demo-distance-label',
+        html: labelHtml,
+        iconSize: [52, 18],
+        iconAnchor: [26, 9],
+      });
+
+      const labelMarker = L.marker(edge.midpointCoords, {
+        icon: labelIcon,
+        interactive: false,
+        zIndexOffset: 120,
+      }).addTo(map);
+
+      demoDistanceLabelsRef.current.push(labelMarker);
+    });
+  }, [map, showDemoMesh, selectedDemoNodeId, userLocation]);
+
+  // 7. Update Real Physical Nearby Peer Markers and Connections (Solid Green: rule 9 & 14)
+  useEffect(() => {
+    if (!map) return;
+
+    const existingRealMarkers = realPeerMarkersRef.current;
+    const connectedPeers = nearby.connectedNodes;
+    const activePeerIds = new Set(connectedPeers.map((p) => p.endpointId));
+
+    // Remove disconnected peers
+    for (const [id, marker] of existingRealMarkers.entries()) {
+      if (!activePeerIds.has(id)) {
+        map.removeLayer(marker);
+        existingRealMarkers.delete(id);
+      }
+    }
+
+    // Clean up old real peer lines
+    realPeerLinesRef.current.forEach((l) => map.removeLayer(l));
+    realPeerLinesRef.current = [];
+
+    if (!userLocation || connectedPeers.length === 0) {
+      return;
+    }
+
+    // Offset connected peers slightly (~12-15m) so they don't visually occlude the user marker if co-located
+    connectedPeers.forEach((peer, idx) => {
+      const angle = (idx * Math.PI * 2) / Math.max(connectedPeers.length, 1);
+      const peerLat = userLocation.latitude + (Math.sin(angle) * 15) / 111139;
+      const peerLng = userLocation.longitude + (Math.cos(angle) * 15) / 108172;
+
+      const isSelected = selectedRealPeerId === peer.endpointId;
+
+      const markerHtml = `
+        <div class="flex flex-col items-center group cursor-pointer transition-transform duration-200 ${
+          isSelected ? 'scale-125' : 'hover:scale-110'
+        }">
+          <div class="relative flex items-center justify-center w-10 h-10">
+            <span class="absolute w-10 h-10 rounded-full bg-[#47e266]/30 animate-ping"></span>
+            <span class="relative flex items-center justify-center w-7 h-7 rounded-full bg-[#1c1b1b] shadow-xl border-2 ${
+              isSelected ? 'border-white scale-105' : 'border-[#47e266]'
+            }">
+              <span class="w-3.5 h-3.5 rounded-full bg-[#47e266] shadow-[0_0_12px_#47e266]"></span>
+            </span>
+          </div>
+          <span class="px-2 py-0.5 rounded-full text-[9px] font-bold font-mono whitespace-nowrap shadow-md mt-0.5 bg-[#142e1d]/95 text-[#47e266] border border-[#2f6f3a]">
+            REAL PEER · ${peer.endpointName}
+          </span>
+        </div>
+      `;
+
+      const markerIcon = L.divIcon({
+        className: 'custom-leaflet-marker',
+        html: markerHtml,
+        iconSize: [44, 48],
+        iconAnchor: [22, 24],
+      });
+
+      if (existingRealMarkers.has(peer.endpointId)) {
+        const marker = existingRealMarkers.get(peer.endpointId)!;
+        marker.setLatLng([peerLat, peerLng]);
+        marker.setIcon(markerIcon);
+        marker.setZIndexOffset(isSelected ? 990 : 200);
+      } else {
+        const marker = L.marker([peerLat, peerLng], {
+          icon: markerIcon,
+          zIndexOffset: isSelected ? 990 : 200,
+        }).addTo(map);
+
+        marker.on('click', () => {
+          setSelectedRealPeerId(peer.endpointId);
+          setSelectedBeaconId('');
+          setSelectedDemoNodeId(null);
+          setIsSheetCollapsed(false);
+          map.panTo([peerLat, peerLng]);
+        });
+
+        existingRealMarkers.set(peer.endpointId, marker);
+      }
+
+      // Draw SOLID GREEN line between user and real peer (Rule #9: Real physical connection = solid green)
+      const line = L.polyline(
+        [
+          [userLocation.latitude, userLocation.longitude],
+          [peerLat, peerLng],
+        ],
+        {
+          color: '#47e266',
+          weight: 3,
+          opacity: 0.9,
+        }
+      ).addTo(map);
+
+      realPeerLinesRef.current.push(line);
+    });
+  }, [map, nearby.connectedNodes, userLocation, selectedRealPeerId]);
+
+  // Fit perimeter across all nodes (Rule 16: demo coordinates included only while showDemoMesh is ON)
   const fitPerimeter = () => {
     if (!map) return;
     map.invalidateSize();
@@ -371,10 +649,17 @@ export const MapTab: React.FC<MapTabProps> = ({
       validCoords.push([userLocation.latitude, userLocation.longitude]);
     }
 
+    // Only include demo coordinates if Demo Mesh is ON (Rule 16)
+    if (showDemoMesh) {
+      DEMO_MESH_NODES.forEach((d) => {
+        validCoords.push([d.latitude, d.longitude]);
+      });
+    }
+
     if (validCoords.length > 1) {
       const bounds = L.latLngBounds(validCoords);
       map.fitBounds(bounds, { padding: [60, 60], maxZoom: 16 });
-      onShowToast(`Tactical perimeter fit: ${validCoords.length} mesh nodes in view`);
+      onShowToast(`Tactical perimeter fit: ${validCoords.length} nodes in view`);
     } else if (validCoords.length === 1) {
       map.flyTo(validCoords[0], 15, { duration: 0.8 });
       onShowToast(`Centered on tactical node`);
@@ -390,6 +675,20 @@ export const MapTab: React.FC<MapTabProps> = ({
       fitPerimeter();
     }
   }, [recalibrateSignal]);
+
+  const handleToggleDemoMesh = () => {
+    const next = !showDemoMesh;
+    setShowDemoMesh(next);
+    setDemoMeshEnabled(next);
+    if (next) {
+      onShowToast('Demo Mesh: Active (3 Simulated Nodes · ~50-90m)');
+    } else {
+      if (selectedDemoNodeId) {
+        setSelectedDemoNodeId(null);
+      }
+      onShowToast('Demo Mesh: Disabled (Real network only)');
+    }
+  };
 
   const handleRecenter = async () => {
     setIsSpinningRecenter(true);
@@ -464,15 +763,36 @@ export const MapTab: React.FC<MapTabProps> = ({
 
       {/* Top Controls Header */}
       <div className="absolute top-3 inset-x-3 flex flex-col gap-2 z-20 pointer-events-none">
-        <div className="flex items-center justify-between w-full">
-          {/* Status Chip */}
-          <div className="pointer-events-auto flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#1c1b1b]/95 backdrop-blur-xl shadow-lg border border-[#2a2a2a]">
-            <span className="w-2 h-2 rounded-full bg-[#47e266] animate-pulse" />
-            <span className="text-[12px] text-[#e5e2e1] font-semibold">
-              {userLocation
-                ? `GPS: ${userLocation.latitude.toFixed(3)}, ${userLocation.longitude.toFixed(3)}`
-                : 'Offline Tactical Map'}
-            </span>
+        <div className="flex items-center justify-between w-full gap-2">
+          {/* Left Controls: Status Chip & Demo Mesh Toggle */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {/* Status Chip */}
+            <div className="pointer-events-auto flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#1c1b1b]/95 backdrop-blur-xl shadow-lg border border-[#2a2a2a]">
+              <span className="w-2 h-2 rounded-full bg-[#47e266] animate-pulse" />
+              <span className="text-[12px] text-[#e5e2e1] font-semibold">
+                {userLocation
+                  ? `GPS: ${userLocation.latitude.toFixed(3)}, ${userLocation.longitude.toFixed(3)}`
+                  : 'Offline Tactical Map'}
+              </span>
+            </div>
+
+            {/* Demo Mesh Toggle Button */}
+            <button
+              aria-label="Toggle Demo Mesh Visualization"
+              onClick={handleToggleDemoMesh}
+              className={`pointer-events-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-full backdrop-blur-xl shadow-lg border text-[11px] font-bold transition-all active:scale-95 cursor-pointer ${
+                showDemoMesh
+                  ? 'bg-[#581c87]/90 text-[#f3e8ff] border-[#a855f7] shadow-[0_0_12px_rgba(168,85,247,0.35)]'
+                  : 'bg-[#1c1b1b]/95 text-[#8b91a0] border-[#2a2a2a] hover:text-[#e5e2e1]'
+              }`}
+              type="button"
+              title={showDemoMesh ? 'Demo Mesh Topology: ON (Click to disable)' : 'Demo Mesh Topology: OFF (Click to enable)'}
+            >
+              <span className="material-symbols-outlined text-[15px]">
+                {showDemoMesh ? 'hub' : 'device_hub'}
+              </span>
+              <span>{showDemoMesh ? 'Demo Mesh: ON' : 'Demo Mesh: OFF'}</span>
+            </button>
           </div>
 
           {/* Right Controls Stack */}
@@ -514,20 +834,20 @@ export const MapTab: React.FC<MapTabProps> = ({
               </button>
             )}
 
-            {/* Layers Toggle (Dark Tactical vs OSM Street) */}
+            {/* Layers Toggle (Street Map vs Dark Tactical) */}
             <button
               aria-label="Toggle map layer style"
               onClick={() => {
-                const next = !isSatelliteLayer;
-                setIsSatelliteLayer(next);
-                onShowToast(next ? 'Street Map tiles active' : 'Dark Tactical map active');
+                const next = !isDarkTacticalLayer;
+                setIsDarkTacticalLayer(next);
+                onShowToast(next ? 'Dark Tactical map active' : 'Street Map tiles active');
               }}
               className={`w-9 h-9 rounded-xl backdrop-blur-xl shadow-md flex items-center justify-center transition-all active:scale-95 cursor-pointer border ${
-                isSatelliteLayer ? 'bg-[#2a2a2a] text-[#aac7ff] border-[#3e90ff]/50' : 'bg-[#1c1b1b]/90 text-[#8b91a0] border-[#2a2a2a]'
+                isDarkTacticalLayer ? 'bg-[#2a2a2a] text-[#aac7ff] border-[#3e90ff]/50' : 'bg-[#1c1b1b]/90 text-[#8b91a0] border-[#2a2a2a]'
               }`}
               id="layer-btn"
               type="button"
-              title="Toggle Map Style"
+              title={isDarkTacticalLayer ? 'Switch to Street Map' : 'Switch to Dark Tactical'}
             >
               <span className="material-symbols-outlined text-[18px]">layers</span>
             </button>
@@ -598,8 +918,8 @@ export const MapTab: React.FC<MapTabProps> = ({
         )}
       </div>
 
-      {/* Empty State Banner when no incidents in Dexie */}
-      {dynamicBeacons.length === 0 && (
+      {/* Empty State Banner when no incidents in Dexie, no Demo Mesh active, and no real Nearby peers connected */}
+      {dynamicBeacons.length === 0 && !showDemoMesh && nearby.connectedCount === 0 && (
         <div className="absolute top-20 inset-x-4 z-20 flex flex-col items-center justify-center py-4 px-5 rounded-2xl bg-[#1c1b1b]/90 backdrop-blur-md border border-[#2a2a2a] text-center shadow-xl">
           <div className="w-9 h-9 rounded-full bg-[#201f1f] flex items-center justify-center text-[#8b91a0] mb-2">
             <span className="material-symbols-outlined text-[20px]">radar</span>
@@ -656,7 +976,192 @@ export const MapTab: React.FC<MapTabProps> = ({
       {/* Floating Bottom Sheet */}
       <div className="mt-auto z-30 w-full px-2.5 pb-2.5">
         <div className="w-full max-w-md mx-auto rounded-3xl bg-[#1c1b1b]/95 backdrop-blur-2xl shadow-[0_15px_40px_rgba(0,0,0,0.7)] p-4 transition-all duration-300 ease-out border border-[#2a2a2a]">
-          {selectedBeacon ? (
+          {selectedDemoNode ? (
+            <>
+              {/* Tactile Drag Handle */}
+              <button
+                onClick={() => setIsSheetCollapsed(!isSheetCollapsed)}
+                className="w-full flex items-center justify-center py-1 -mt-1 mb-2 group cursor-pointer focus:outline-none"
+                title={isSheetCollapsed ? 'Expand panel' : 'Collapse panel'}
+              >
+                <div className="w-10 h-1 rounded-full bg-[#414754] group-hover:bg-[#c084fc] transition-colors" />
+              </button>
+
+              {isSheetCollapsed ? (
+                /* Collapsed Demo Node State */
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#c084fc] shrink-0 animate-pulse" />
+                    <div className="flex flex-col truncate">
+                      <span className="text-[14px] font-bold text-[#e5e2e1] truncate">{selectedDemoNode.title}</span>
+                      <span className="text-[11px] text-[#d8b4fe]">{selectedDemoNode.role} · {selectedDemoNode.offsetDescription}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => setSelectedDemoNodeId(null)}
+                      className="px-2.5 py-1.5 rounded-xl font-semibold text-xs bg-[#2a2a2a] text-[#e5e2e1] hover:bg-[#353535] cursor-pointer"
+                    >
+                      Deselect
+                    </button>
+                    <button
+                      onClick={() => setIsSheetCollapsed(false)}
+                      className="w-8 h-8 rounded-xl bg-[#2a2a2a] text-[#e5e2e1] flex items-center justify-center cursor-pointer"
+                      title="Expand"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">expand_less</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* Expanded Demo Node State */
+                <>
+                  <div className="flex items-start justify-between gap-2 mb-3">
+                    <div className="flex flex-col">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#c084fc] animate-pulse" />
+                        <span className="text-[17px] text-[#e5e2e1] font-bold tracking-tight">
+                          {selectedDemoNode.title}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[12px] text-[#c0c6d6]">
+                        <span>{selectedDemoNode.role}</span>
+                        <span className="text-[#8b91a0]">•</span>
+                        <span className="text-[#d8b4fe] font-mono">{selectedDemoNode.offsetDescription}</span>
+                      </div>
+                    </div>
+
+                    {/* Demo Visualization Pill */}
+                    <div className="px-2.5 py-1 rounded-full flex items-center gap-1 shadow-sm shrink-0 bg-[#3b0764] text-[#d8b4fe] border border-[#a855f7]/60">
+                      <span className="material-symbols-outlined text-[13px]">science</span>
+                      <span className="text-[10px] font-bold uppercase tracking-wider">DEMO NODE</span>
+                    </div>
+                  </div>
+
+                  {/* Demo Telemetry Bar */}
+                  <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#201f1f] mb-2 border border-[#3b0764]/60">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[16px] text-[#c084fc]">battery_charging_full</span>
+                      <span className="text-[12px] text-[#e5e2e1] font-mono">{selectedDemoNode.details.battery}</span>
+                      <span className="text-[#8b91a0] text-xs">•</span>
+                      <span className="text-[11px] text-[#c0c6d6]">{selectedDemoNode.details.simulatedSignal}</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-[#a855f7] bg-[#2e1065] px-2 py-0.5 rounded border border-[#a855f7]/40">
+                      isDemo: true
+                    </span>
+                  </div>
+
+                  {/* Geographic Distance Callout (Not Radio Range) */}
+                  <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#181226] mb-2.5 border border-[#a855f7]/30 text-xs">
+                    <span className="text-[#c0c6d6]">Geographic distance from local anchor:</span>
+                    <span className="font-mono font-bold text-[#d8b4fe]">{demoNodeDistanceToAnchor}</span>
+                  </div>
+
+                  {/* Isolation Assurance Banner */}
+                  <p className="text-[11px] text-[#8b91a0] leading-relaxed mb-3 bg-[#131313] p-2.5 rounded-xl border border-[#2a2a2a]">
+                    ℹ️ <strong>Geographic Demo Visualization Only:</strong> {selectedDemoNode.details.description} Not participating in radio mesh.
+                  </p>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setSelectedDemoNodeId(null)}
+                      className="flex-1 h-11 rounded-xl font-bold text-[13px] bg-[#2a2a2a] text-[#e5e2e1] hover:bg-[#353535] transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                      type="button"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">close</span>
+                      <span>Deselect Demo Node</span>
+                    </button>
+                    <button
+                      aria-label="Demo Node Details"
+                      onClick={() => setShowInfoModal(true)}
+                      className="w-11 h-11 rounded-xl bg-[#2a2a2a] text-[#e5e2e1] flex items-center justify-center hover:bg-[#3a3939] active:scale-95 transition-all cursor-pointer border border-[#2a2a2a] shrink-0"
+                      type="button"
+                      title="Demo Node Details"
+                    >
+                      <span className="material-symbols-outlined text-[20px]">info</span>
+                    </button>
+                    <button
+                      aria-label="Collapse panel"
+                      onClick={() => setIsSheetCollapsed(true)}
+                      className="w-11 h-11 rounded-xl bg-[#201f1f] text-[#8b91a0] hover:text-[#e5e2e1] flex items-center justify-center hover:bg-[#2a2a2a] active:scale-95 transition-all cursor-pointer border border-[#2a2a2a] shrink-0"
+                      type="button"
+                      title="Minimize Panel"
+                    >
+                      <span className="material-symbols-outlined text-[20px]">expand_more</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          ) : selectedRealPeer ? (
+            <>
+              {/* Real Physical Nearby Peer State */}
+              <button
+                onClick={() => setIsSheetCollapsed(!isSheetCollapsed)}
+                className="w-full flex items-center justify-center py-1 -mt-1 mb-2 group cursor-pointer focus:outline-none"
+                title={isSheetCollapsed ? 'Expand panel' : 'Collapse panel'}
+              >
+                <div className="w-10 h-1 rounded-full bg-[#414754] group-hover:bg-[#47e266] transition-colors" />
+              </button>
+
+              <div className="flex items-start justify-between gap-2 mb-3">
+                <div className="flex flex-col">
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#47e266] animate-ping" />
+                    <span className="text-[17px] text-[#e5e2e1] font-bold tracking-tight">
+                      {selectedRealPeer.endpointName}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[12px] text-[#c0c6d6]">
+                    <span>Real Physical Radio Peer</span>
+                    <span className="text-[#8b91a0]">•</span>
+                    <span className="text-[#47e266] font-mono">{selectedRealPeer.status}</span>
+                  </div>
+                </div>
+
+                <div className="px-2.5 py-1 rounded-full flex items-center gap-1 shadow-sm shrink-0 bg-[#142e1d] text-[#47e266] border border-[#2f6f3a]">
+                  <span className="material-symbols-outlined text-[13px]">nearby</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider">REAL PEER</span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#201f1f] mb-3 border border-[#2f6f3a]/60 text-xs text-[#c0c6d6]">
+                <span>Endpoint ID: <strong className="font-mono text-[#e5e2e1]">{selectedRealPeer.endpointId}</strong></span>
+                <span className="text-[#47e266] font-semibold">Solid Green Link</span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setSelectedRealPeerId(null)}
+                  className="flex-1 h-11 rounded-xl font-bold text-[13px] bg-[#2a2a2a] text-[#e5e2e1] hover:bg-[#353535] transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                  type="button"
+                >
+                  <span className="material-symbols-outlined text-[16px]">close</span>
+                  <span>Deselect Peer</span>
+                </button>
+                <button
+                  aria-label="Peer Details"
+                  onClick={() => setShowInfoModal(true)}
+                  className="w-11 h-11 rounded-xl bg-[#2a2a2a] text-[#e5e2e1] flex items-center justify-center hover:bg-[#3a3939] active:scale-95 transition-all cursor-pointer border border-[#2a2a2a] shrink-0"
+                  type="button"
+                  title="Peer Details"
+                >
+                  <span className="material-symbols-outlined text-[20px]">info</span>
+                </button>
+                <button
+                  aria-label="Collapse panel"
+                  onClick={() => setIsSheetCollapsed(true)}
+                  className="w-11 h-11 rounded-xl bg-[#201f1f] text-[#8b91a0] hover:text-[#e5e2e1] flex items-center justify-center hover:bg-[#2a2a2a] active:scale-95 transition-all cursor-pointer border border-[#2a2a2a] shrink-0"
+                  type="button"
+                  title="Minimize Panel"
+                >
+                  <span className="material-symbols-outlined text-[20px]">expand_more</span>
+                </button>
+              </div>
+            </>
+          ) : selectedBeacon ? (
             <>
               {/* Tactile Drag & Toggle Handle */}
               <button
@@ -860,57 +1365,158 @@ export const MapTab: React.FC<MapTabProps> = ({
       </div>
 
       {/* Info Details Modal */}
-      {showInfoModal && selectedBeacon && (
+      {showInfoModal && (
         <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#2a2a2a] rounded-3xl w-full max-w-xs p-5 shadow-2xl text-xs space-y-3 animate-in fade-in zoom-in duration-150">
-            <div className="flex justify-between items-center border-b border-[#2a2a2a] pb-2">
-              <span className="font-bold text-[15px] text-[#e5e2e1]">{selectedBeacon.title}</span>
-              <button
-                onClick={() => setShowInfoModal(false)}
-                className="w-7 h-7 rounded-full bg-[#2a2a2a] flex items-center justify-center text-[#c0c6d6] hover:text-white cursor-pointer"
-              >
-                <span className="material-symbols-outlined text-[16px]">close</span>
-              </button>
-            </div>
-            <div className="space-y-2 text-[#c0c6d6]">
-              <div className="flex justify-between">
-                <span className="text-[#8b91a0]">Sector:</span>
-                <span className="font-medium text-[#e5e2e1]">{selectedBeacon.sector}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-[#8b91a0]">Classification:</span>
-                <span className="font-medium text-[#e5e2e1]">{selectedBeacon.category}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-[#8b91a0]">Distance &amp; ETA:</span>
-                <span className="font-medium text-[#e5e2e1]">{selectedBeacon.distance} ({selectedBeacon.walkTime})</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-[#8b91a0]">Threat Rating:</span>
-                <span className="font-semibold text-[#ffb4ab]">{selectedBeacon.threatLevel}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-[#8b91a0]">Encryption:</span>
-                <span className="font-mono text-[#aac7ff]">AES-256 Mesh Local</span>
-              </div>
-            </div>
-            <div className="pt-2 flex gap-2">
-              <button
-                onClick={() => {
-                  setShowInfoModal(false);
-                  handleToggleNav();
-                }}
-                className="flex-1 py-2.5 bg-[#3e90ff] hover:bg-[#3e90ff]/90 text-[#002957] rounded-xl font-bold cursor-pointer"
-              >
-                {isNavigating ? 'Stop Navigation' : 'Start Navigation'}
-              </button>
-              <button
-                onClick={() => setShowInfoModal(false)}
-                className="px-4 py-2.5 bg-[#2a2a2a] hover:bg-[#3a3939] text-[#e5e2e1] rounded-xl font-medium cursor-pointer"
-              >
-                Close
-              </button>
-            </div>
+            {selectedDemoNode ? (
+              /* Demo Node Info View */
+              <>
+                <div className="flex justify-between items-center border-b border-[#2a2a2a] pb-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#c084fc] animate-pulse" />
+                    <span className="font-bold text-[15px] text-[#e5e2e1]">{selectedDemoNode.title}</span>
+                  </div>
+                  <button
+                    onClick={() => setShowInfoModal(false)}
+                    className="w-7 h-7 rounded-full bg-[#2a2a2a] flex items-center justify-center text-[#c0c6d6] hover:text-white cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">close</span>
+                  </button>
+                </div>
+                <div className="space-y-2 text-[#c0c6d6]">
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Classification:</span>
+                    <span className="font-semibold text-[#d8b4fe]">Demo Node (Simulation)</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Simulated Role:</span>
+                    <span className="font-medium text-[#e5e2e1]">{selectedDemoNode.role}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Coordinates:</span>
+                    <span className="font-mono text-[#e5e2e1]">{selectedDemoNode.latitude.toFixed(6)}, {selectedDemoNode.longitude.toFixed(6)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Geographic Distance:</span>
+                    <span className="font-medium text-[#e5e2e1]">{demoNodeDistanceToAnchor} (Spatial only)</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Radio Status:</span>
+                    <span className="font-mono text-[#aac7ff]">Not participating in radio mesh</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Isolation Flag:</span>
+                    <span className="font-mono text-[#c084fc]">isDemo: true</span>
+                  </div>
+                </div>
+                <div className="pt-2">
+                  <button
+                    onClick={() => setShowInfoModal(false)}
+                    className="w-full py-2.5 bg-[#2a2a2a] hover:bg-[#3a3939] text-[#e5e2e1] rounded-xl font-medium cursor-pointer"
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            ) : selectedRealPeer ? (
+              /* Real Physical Peer Info View */
+              <>
+                <div className="flex justify-between items-center border-b border-[#2a2a2a] pb-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#47e266] animate-ping" />
+                    <span className="font-bold text-[15px] text-[#e5e2e1]">{selectedRealPeer.endpointName}</span>
+                  </div>
+                  <button
+                    onClick={() => setShowInfoModal(false)}
+                    className="w-7 h-7 rounded-full bg-[#2a2a2a] flex items-center justify-center text-[#c0c6d6] hover:text-white cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">close</span>
+                  </button>
+                </div>
+                <div className="space-y-2 text-[#c0c6d6]">
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Transport:</span>
+                    <span className="font-semibold text-[#47e266]">Android Nearby Connections</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Endpoint ID:</span>
+                    <span className="font-mono text-[#e5e2e1]">{selectedRealPeer.endpointId}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Connection State:</span>
+                    <span className="font-medium text-[#47e266]">{selectedRealPeer.status}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Link Visual:</span>
+                    <span className="font-medium text-[#47e266]">Solid Green Line</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Data Status:</span>
+                    <span className="font-medium text-[#aac7ff]">Live Physical Radio</span>
+                  </div>
+                </div>
+                <div className="pt-2">
+                  <button
+                    onClick={() => setShowInfoModal(false)}
+                    className="w-full py-2.5 bg-[#2a2a2a] hover:bg-[#3a3939] text-[#e5e2e1] rounded-xl font-medium cursor-pointer"
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            ) : selectedBeacon ? (
+              /* Existing Incident Info View */
+              <>
+                <div className="flex justify-between items-center border-b border-[#2a2a2a] pb-2">
+                  <span className="font-bold text-[15px] text-[#e5e2e1]">{selectedBeacon.title}</span>
+                  <button
+                    onClick={() => setShowInfoModal(false)}
+                    className="w-7 h-7 rounded-full bg-[#2a2a2a] flex items-center justify-center text-[#c0c6d6] hover:text-white cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">close</span>
+                  </button>
+                </div>
+                <div className="space-y-2 text-[#c0c6d6]">
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Sector:</span>
+                    <span className="font-medium text-[#e5e2e1]">{selectedBeacon.sector}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Classification:</span>
+                    <span className="font-medium text-[#e5e2e1]">{selectedBeacon.category}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Distance &amp; ETA:</span>
+                    <span className="font-medium text-[#e5e2e1]">{selectedBeacon.distance} ({selectedBeacon.walkTime})</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Threat Rating:</span>
+                    <span className="font-semibold text-[#ffb4ab]">{selectedBeacon.threatLevel}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#8b91a0]">Encryption:</span>
+                    <span className="font-mono text-[#aac7ff]">AES-256 Mesh Local</span>
+                  </div>
+                </div>
+                <div className="pt-2 flex gap-2">
+                  <button
+                    onClick={() => {
+                      setShowInfoModal(false);
+                      handleToggleNav();
+                    }}
+                    className="flex-1 py-2.5 bg-[#3e90ff] hover:bg-[#3e90ff]/90 text-[#002957] rounded-xl font-bold cursor-pointer"
+                  >
+                    {isNavigating ? 'Stop Navigation' : 'Start Navigation'}
+                  </button>
+                  <button
+                    onClick={() => setShowInfoModal(false)}
+                    className="px-4 py-2.5 bg-[#2a2a2a] hover:bg-[#3a3939] text-[#e5e2e1] rounded-xl font-medium cursor-pointer"
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
       )}
