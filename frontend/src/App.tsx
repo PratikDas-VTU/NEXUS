@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { NavTab } from './types';
 import { MobileFrame } from './components/MobileFrame';
 import { TopBar } from './components/TopBar';
@@ -10,12 +10,21 @@ import { DeviceTab } from './components/DeviceTab';
 import { StitchDataModal } from './components/StitchDataModal';
 import { ServiceProvider, useNexusServices } from './context/ServiceContext';
 import type { IncidentType, IncidentPriority } from '../../shared/types';
+import { AdminDashboard, AdminLoginView, AdminUser } from './admin';
 
 function AppContent() {
   const [activeTab, setActiveTab] = useState<NavTab>('feed');
   const [isStitchModalOpen, setIsStitchModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isInternetConnected, setIsInternetConnected] = useState<boolean>(false);
+  const [viewMode, setViewMode] = useState<'field' | 'admin-login' | 'admin'>('field');
+  const [adminUser, setAdminUser] = useState<AdminUser | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.hash === '#admin') {
+      setViewMode(adminUser ? 'admin' : 'admin-login');
+    }
+  }, [adminUser]);
 
   const {
     incidents,
@@ -108,6 +117,109 @@ function AppContent() {
     }
   };
 
+  const handleOpenAdmin = () => {
+    if (adminUser) {
+      setViewMode('admin');
+    } else {
+      setViewMode('admin-login');
+    }
+  };
+
+  const handleAdminLoginSuccess = (user: AdminUser) => {
+    setAdminUser(user);
+    setViewMode('admin');
+    triggerToast(`Authenticated as Commander ${user.name}`);
+  };
+
+  const handleAdminLogout = () => {
+    setAdminUser(null);
+    setViewMode('field');
+    triggerToast('Logged out from Amrita Disaster Command Hub');
+  };
+
+  const handleAdminAddIncident = async (data: {
+    title: string;
+    description: string;
+    location: string;
+    category: string;
+    badgeColor?: 'error' | 'amber' | 'primary';
+  }) => {
+    try {
+      let type: IncidentType = 'medical';
+      let priority: IncidentPriority = 'P0';
+
+      const cat = (data.category || '').toLowerCase();
+      if (cat.includes('fire') || cat.includes('wildfire')) {
+        type = 'safety';
+        priority = 'P1';
+      } else if (
+        cat.includes('water') ||
+        cat.includes('supplies') ||
+        cat.includes('resource') ||
+        cat.includes('logistics')
+      ) {
+        type = 'resource';
+        priority = 'P2';
+      } else if (cat.includes('security') || cat.includes('perimeter')) {
+        type = 'safety';
+        priority = 'P1';
+      } else if (data.badgeColor === 'amber') {
+        type = 'safety';
+        priority = 'P1';
+      }
+
+      await createIncident({
+        type,
+        priority,
+        latitude: 12.972 + (Math.random() - 0.5) * 0.01,
+        longitude: 77.595 + (Math.random() - 0.5) * 0.01,
+        peopleAffected: 1,
+        description: `${data.title}\n${data.description} [Sector: ${data.location}]`,
+      });
+
+      triggerToast(`Admin Incident logged: "${data.title}" queued for mesh broadcast`);
+    } catch (err: any) {
+      triggerToast(`Failed to dispatch incident: ${err?.message || 'Validation error'}`);
+    }
+  };
+
+  const handleAdminResolveIncident = async (id: string) => {
+    try {
+      await updateIncidentStatus(id, 'resolved');
+      triggerToast(`Incident #${id.slice(0, 8)} marked as RESOLVED`);
+    } catch (err: any) {
+      triggerToast(`Failed to resolve incident: ${err?.message || 'Error'}`);
+    }
+  };
+
+  if (viewMode === 'admin-login') {
+    return (
+      <AdminLoginView
+        onLoginSuccess={handleAdminLoginSuccess}
+        onCancel={() => setViewMode('field')}
+        onShowToast={triggerToast}
+        isInternetConnected={isInternetConnected}
+        onToggleInternet={handleToggleInternet}
+      />
+    );
+  }
+
+  if (viewMode === 'admin' && adminUser) {
+    return (
+      <AdminDashboard
+        adminUser={adminUser}
+        incidents={incidents}
+        onAddIncident={handleAdminAddIncident}
+        onResolveIncident={handleAdminResolveIncident}
+        onLogout={handleAdminLogout}
+        onSwitchToFieldView={() => setViewMode('field')}
+        onShowToast={triggerToast}
+        isInternetConnected={isInternetConnected}
+        onToggleInternet={handleToggleInternet}
+      />
+    );
+  }
+
   return (
     <MobileFrame
       onOpenStitchModal={() => setIsStitchModalOpen(true)}
@@ -121,6 +233,7 @@ function AppContent() {
         isInternetConnected={isInternetConnected}
         onToggleInternet={handleToggleInternet}
         peerCount={networkStatus.activePeers.length}
+        onOpenAdmin={handleOpenAdmin}
       />
 
       {/* Main Tab Viewport */}
@@ -163,6 +276,7 @@ function AppContent() {
             deviceId={deviceId}
             outboxCount={outboxCount}
             localCacheCount={incidents.length}
+            onOpenAdmin={handleOpenAdmin}
           />
         )}
       </div>

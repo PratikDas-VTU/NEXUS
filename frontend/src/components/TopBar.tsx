@@ -8,6 +8,7 @@ interface TopBarProps {
   peerCount?: number;
   isInternetConnected?: boolean;
   onToggleInternet?: () => void;
+  onOpenAdmin?: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -16,6 +17,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   peerCount = 4,
   isInternetConnected = false,
   onToggleInternet,
+  onOpenAdmin,
 }) => {
   const [showMeshDiagnostics, setShowMeshDiagnostics] = useState(false);
 
@@ -104,6 +106,20 @@ export const TopBar: React.FC<TopBarProps> = ({
                 person
               </span>
             </button>
+
+            {/* Admin Command Hub Portal button */}
+            {onOpenAdmin && (
+              <button
+                id="nexus-btn-header-admin"
+                onClick={onOpenAdmin}
+                className="w-7 h-7 rounded-full flex items-center justify-center border transition-all cursor-pointer bg-[#1c1b24] hover:bg-[#282736] border-[#38374d] text-[#aac7ff] hover:text-white active:scale-95 shadow-xs"
+                title="Amrita Disaster Command Hub (Admin Portal)"
+              >
+                <span className="material-symbols-outlined text-[15px]">
+                  admin_panel_settings
+                </span>
+              </button>
+            )}
           </div>
         </div>
       </header>
