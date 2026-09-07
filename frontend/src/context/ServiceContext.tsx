@@ -1,16 +1,34 @@
-import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import type { IFrontendIncidentService, INetworkRelayService, RelayNetworkStatus } from '../../../shared/interfaces';
 import type { Incident, DraftIncident, IncidentStatus } from '../../../shared/types';
 import { FrontendIncidentService } from '../../../backend/data/incidentService';
 import { OfflineStorageAdapter } from '../../../backend/data/adapter';
 import { NexusDatabase } from '../../../backend/data/db';
-import { getDeviceId } from '../../../backend/data/deviceId';
+import { getDeviceId, getSynchronousDeviceId } from '../../../backend/data/deviceId';
 import { RelayEngine } from '../../../networking/relayEngine';
 import { incidentToViewModel } from '../services/incidentMapper';
 import type { IncidentItem } from '../types';
 
-import { NetworkCoordinator } from '../services/networkCoordinator';
+import { NetworkCoordinator, NetworkDiagnostics } from '../services/networkCoordinator';
 import { getSignalingUrl } from '../services/api/config';
+import {
+  GeolocationCoordinates,
+  LocationState,
+  GeolocationResult,
+  getCurrentPosition,
+  watchUserPosition,
+  getCachedPosition,
+  createManualCoordinates,
+} from '../services/api/geolocation';
+import {
+  DevicePermissionsStatus,
+  queryAllPermissionsStatus,
+  requestNotificationPermission,
+  requestStoragePersistence,
+  requestScreenWakeLock,
+  releaseScreenWakeLock,
+  testBluetoothDeviceScan,
+} from '../services/api/permissions';
 
 interface ServiceContextValue {
   incidentService: IFrontendIncidentService;
@@ -25,6 +43,23 @@ interface ServiceContextValue {
   updateIncidentStatus: (id: string, newStatus: IncidentStatus) => Promise<void>;
   refreshOutboxCount: () => Promise<void>;
   toggleInternet: (enable: boolean) => Promise<void>;
+
+  // Location Core
+  currentLocation: GeolocationCoordinates | null;
+  locationState: LocationState;
+  locationError: string | null;
+  requestLocation: (forcePrompt?: boolean) => Promise<GeolocationResult>;
+  setManualLocation: (lat: number, lng: number) => void;
+
+  // Hardware & Network Diagnostics
+  networkDiagnostics: NetworkDiagnostics;
+  reconnectSignaler: (customUrl?: string) => Promise<void>;
+
+  // Device Permissions & Field Readiness
+  permissions: DevicePermissionsStatus;
+  refreshPermissions: () => Promise<void>;
+  requestPermission: (type: 'notifications' | 'storage' | 'wakeLock') => Promise<boolean>;
+  testBluetooth: () => Promise<{ success: boolean; deviceName?: string; error?: string }>;
 }
 
 const ServiceContext = createContext<ServiceContextValue | null>(null);
@@ -48,10 +83,26 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return new OfflineStorageAdapter(database);
   }, [database]);
 
-  const [deviceId, setDeviceId] = useState<string>(nodeParam ? `DEV-${nodeParam.toUpperCase()}` : 'DEV-INIT');
+  const [deviceId, setDeviceId] = useState<string>(() => getSynchronousDeviceId(nodeParam));
   const [incidents, setIncidents] = useState<IncidentItem[]>([]);
   const [rawIncidents, setRawIncidents] = useState<Incident[]>([]);
   const [outboxCount, setOutboxCount] = useState<number>(0);
+
+  // Initial cached location lookup (Offline-First)
+  const initialCachedLocation = useMemo(() => getCachedPosition(), []);
+  const [currentLocation, setCurrentLocation] = useState<GeolocationCoordinates | null>(initialCachedLocation);
+  const [locationState, setLocationState] = useState<LocationState>(initialCachedLocation ? 'CACHED' : 'IDLE');
+  const [locationError, setLocationError] = useState<string | null>(null);
+
+  // Permissions state
+  const [permissions, setPermissions] = useState<DevicePermissionsStatus>({
+    location: 'NOT_REQUESTED',
+    notifications: 'NOT_REQUESTED',
+    storage: 'NOT_REQUESTED',
+    wakeLock: 'NOT_SUPPORTED',
+    bluetooth: 'NOT_SUPPORTED',
+    isSecureContext: false,
+  });
 
   const incidentService = useMemo(() => {
     return new FrontendIncidentService(database);
@@ -70,17 +121,21 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, [deviceId, networkService]);
 
   const [networkStatus, setNetworkStatus] = useState<RelayNetworkStatus>(networkService.getStatus());
+  const [networkDiagnostics, setNetworkDiagnostics] = useState<NetworkDiagnostics>(() => coordinator.getDiagnostics());
 
-  // Initialize device ID
+  // Initialize device ID from Dexie (syncing with synchronous ID)
   useEffect(() => {
     async function initDevice() {
       if (!nodeParam) {
         const id = await getDeviceId(database);
-        setDeviceId(id);
+        if (id !== deviceId) {
+          setDeviceId(id);
+          coordinator.updateDeviceId(id);
+        }
       }
     }
     initDevice();
-  }, [database, nodeParam]);
+  }, [database, nodeParam, coordinator, deviceId]);
 
   // Subscribe to network status
   useEffect(() => {
@@ -89,6 +144,14 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
     return unsub;
   }, [networkService]);
+
+  // Subscribe to real-time network diagnostics
+  useEffect(() => {
+    const unsub = coordinator.subscribeDiagnostics((diag) => {
+      setNetworkDiagnostics(diag);
+    });
+    return unsub;
+  }, [coordinator]);
 
   const refreshOutboxCount = async () => {
     try {
@@ -103,7 +166,6 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   useEffect(() => {
     let isSubscribed = true;
 
-    // Initial outbox check
     refreshOutboxCount();
 
     const unsub = incidentService.subscribeToIncidents((items) => {
@@ -129,6 +191,119 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
   }, [coordinator]);
 
+  // Refresh hardware permissions truthfully
+  const refreshPermissions = useCallback(async () => {
+    const status = await queryAllPermissionsStatus();
+    setPermissions(status);
+  }, []);
+
+  // Initial permissions check & storage persistence request
+  useEffect(() => {
+    refreshPermissions();
+    requestStoragePersistence().then(() => {
+      refreshPermissions();
+    });
+  }, [refreshPermissions]);
+
+  // Location request handler
+  const requestLocation = useCallback(async (_forcePrompt = false): Promise<GeolocationResult> => {
+    setLocationState('ACQUIRING');
+    setLocationError(null);
+
+    const result = await getCurrentPosition({
+      enableHighAccuracy: true,
+      timeout: 12000,
+      maximumAge: 5000,
+    });
+
+    if (result.success && result.coords) {
+      setCurrentLocation(result.coords);
+      setLocationState('LIVE');
+      setLocationError(null);
+      refreshPermissions();
+      return result;
+    } else {
+      // Fall back to cached if available
+      const cached = getCachedPosition();
+      if (cached) {
+        setCurrentLocation(cached);
+        setLocationState('CACHED');
+      } else {
+        if (result.errorCode === 'PERMISSION_DENIED') {
+          setLocationState('DENIED');
+        } else {
+          setLocationState('UNAVAILABLE');
+        }
+      }
+      setLocationError(result.error || 'Failed to acquire GPS fix.');
+      refreshPermissions();
+      return result;
+    }
+  }, [refreshPermissions]);
+
+  // Continuous location watch when active
+  useEffect(() => {
+    let unwatch: (() => void) | null = null;
+
+    // Only start watching if we already have LIVE status or after request
+    if (locationState === 'LIVE') {
+      unwatch = watchUserPosition(
+        (coords) => {
+          setCurrentLocation(coords);
+          setLocationState('LIVE');
+          setLocationError(null);
+        },
+        (errorRes) => {
+          // If watch fails, maintain cached position
+          console.warn('[LocationWatch] GPS watch update issue:', errorRes.error);
+        }
+      );
+    }
+
+    return () => {
+      if (unwatch) unwatch();
+    };
+  }, [locationState]);
+
+  // Set manual coordinates fallback
+  const setManualLocation = useCallback((lat: number, lng: number) => {
+    const manualCoords = createManualCoordinates(lat, lng);
+    setCurrentLocation(manualCoords);
+    setLocationState('MANUAL');
+    setLocationError(null);
+  }, []);
+
+  // Individual permission request handlers
+  const requestPermission = useCallback(
+    async (type: 'notifications' | 'storage' | 'wakeLock'): Promise<boolean> => {
+      let success = false;
+      if (type === 'notifications') {
+        success = await requestNotificationPermission();
+      } else if (type === 'storage') {
+        success = await requestStoragePersistence();
+      } else if (type === 'wakeLock') {
+        success = await requestScreenWakeLock();
+      }
+      await refreshPermissions();
+      return success;
+    },
+    [refreshPermissions]
+  );
+
+  // Test Bluetooth (OPTIONAL ONLY)
+  const testBluetooth = useCallback(async () => {
+    const res = await testBluetoothDeviceScan();
+    await refreshPermissions();
+    return res;
+  }, [refreshPermissions]);
+
+  // Clean up wake lock on unmount
+  useEffect(() => {
+    return () => {
+      releaseScreenWakeLock();
+    };
+  }, []);
+
   const toggleInternet = async (enable: boolean) => {
     if (enable) {
       await coordinator.start();
@@ -148,6 +323,11 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     await refreshOutboxCount();
   };
 
+  const reconnectSignaler = useCallback(async (customUrl?: string) => {
+    await coordinator.stop();
+    await coordinator.start(customUrl);
+  }, [coordinator]);
+
   const value: ServiceContextValue = {
     incidentService,
     networkService,
@@ -161,6 +341,23 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     updateIncidentStatus,
     refreshOutboxCount,
     toggleInternet,
+
+    // Hardware & Network Diagnostics
+    networkDiagnostics,
+    reconnectSignaler,
+
+    // Location
+    currentLocation,
+    locationState,
+    locationError,
+    requestLocation,
+    setManualLocation,
+
+    // Permissions
+    permissions,
+    refreshPermissions,
+    requestPermission,
+    testBluetooth,
   };
 
   return <ServiceContext.Provider value={value}>{children}</ServiceContext.Provider>;

@@ -4,6 +4,7 @@ import 'leaflet/dist/leaflet.css';
 import { MapBeacon, IncidentItem } from '../types';
 import { getCurrentPosition } from '../services/api/geolocation';
 import { getMapTileConfig } from '../services/api/config';
+import { useNexusServices } from '../context/ServiceContext';
 
 interface MapTabProps {
   onShowToast: (msg: string) => void;
@@ -11,6 +12,7 @@ interface MapTabProps {
 }
 
 export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) => {
+  const { currentLocation, requestLocation } = useNexusServices();
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
@@ -75,6 +77,13 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
     if (!selectedBeacon) return null;
     return incidents.find((i) => i.id === selectedBeacon.id) || null;
   }, [selectedBeacon, incidents]);
+
+  // Sync with global device location
+  useEffect(() => {
+    if (currentLocation) {
+      setUserLocation(currentLocation);
+    }
+  }, [currentLocation]);
 
   // 1. Initialize Leaflet Map once
   useEffect(() => {
@@ -331,18 +340,24 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
   const handleRecenter = async () => {
     setIsSpinningRecenter(true);
     try {
-      const pos = await getCurrentPosition({ enableHighAccuracy: true, timeout: 10000 });
-      if (pos.success && pos.coords) {
-        setUserLocation(pos.coords);
+      const res = await requestLocation(true);
+      if (res.success && res.coords) {
+        setUserLocation(res.coords);
         if (mapInstanceRef.current) {
-          mapInstanceRef.current.flyTo([pos.coords.latitude, pos.coords.longitude], 16, { duration: 1.2 });
+          mapInstanceRef.current.flyTo([res.coords.latitude, res.coords.longitude], 16, { duration: 1.2 });
         }
-        onShowToast(`GPS locked: ${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)} (±${pos.coords.accuracy}m)`);
+        onShowToast(`GPS locked: ${res.coords.latitude.toFixed(4)}, ${res.coords.longitude.toFixed(4)} (±${res.coords.accuracy}m)`);
+      } else if (currentLocation && mapInstanceRef.current) {
+        mapInstanceRef.current.flyTo([currentLocation.latitude, currentLocation.longitude], 15, { duration: 1 });
+        onShowToast(`Centered on ${currentLocation.source === 'CACHED' ? 'cached' : 'manual'} position`);
       } else {
-        onShowToast(`GPS notice: ${pos.error || 'Coordinates unavailable'}`);
+        onShowToast(`GPS notice: ${res.error || 'Coordinates unavailable'}`);
       }
     } catch {
-      onShowToast('Could not acquire GPS position');
+      if (currentLocation && mapInstanceRef.current) {
+        mapInstanceRef.current.flyTo([currentLocation.latitude, currentLocation.longitude], 15, { duration: 1 });
+      }
+      onShowToast('Could not acquire fresh GPS fix');
     } finally {
       setIsSpinningRecenter(false);
     }

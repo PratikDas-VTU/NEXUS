@@ -139,6 +139,14 @@ function createFrameParser(onMessage, onClose) {
   };
 }
 
+// Helper to unmask Chrome mDNS .local hostnames with real client IPv4
+function unmaskMdns(str, replacementIp) {
+  if (!str || typeof str !== 'string' || !replacementIp || replacementIp === '127.0.0.1' || replacementIp.startsWith('fe80')) {
+    return str;
+  }
+  return str.replace(/[a-zA-Z0-9-]+\.local/gi, replacementIp);
+}
+
 // Create HTTP server for both health checks and WebSocket upgrade
 const server = http.createServer((req, res) => {
   if (req.url === '/status' || req.url === '/health') {
@@ -154,6 +162,7 @@ const server = http.createServer((req, res) => {
         peers: Array.from(peers.values()).map((p) => ({
           peerId: p.peerId,
           deviceId: p.deviceId,
+          remoteIp: p.remoteIp,
           connectedAt: p.connectedAt,
         })),
         timestamp: Date.now(),
@@ -173,6 +182,9 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy();
     return;
   }
+
+  const rawIp = socket.remoteAddress || req.socket?.remoteAddress || '127.0.0.1';
+  const remoteIp = rawIp.replace(/^.*:/, '');
 
   // RFC 6455 Handshake
   const hash = crypto
@@ -218,14 +230,18 @@ server.on('upgrade', (req, socket, head) => {
           socket,
           peerId,
           deviceId: deviceId || `DEV-${peerId.slice(0, 6)}`,
+          remoteIp,
           connectedAt: Date.now(),
         };
 
-        // Send existing peers list to the newly joined peer
-        const existingPeers = Array.from(peers.values()).map((p) => ({
-          peerId: p.peerId,
-          deviceId: p.deviceId,
-        }));
+        // Send existing peers list to the newly joined peer (excluding self)
+        const existingPeers = Array.from(peers.values())
+          .filter((p) => p.peerId !== peerId)
+          .map((p) => ({
+            peerId: p.peerId,
+            deviceId: p.deviceId,
+            remoteIp: p.remoteIp,
+          }));
 
         sendJson(newPeer, {
           type: 'SIGNAL_PEERS',
@@ -235,12 +251,12 @@ server.on('upgrade', (req, socket, head) => {
 
         // Store peer and notify all other peers
         peers.set(peerId, newPeer);
-        console.log(`[Signaler] Peer joined: ${peerId} (Device: ${newPeer.deviceId}, Total: ${peers.size})`);
+        console.log(`[Signaler] Peer joined: ${peerId} (Device: ${newPeer.deviceId}, IP: ${remoteIp}, Total: ${peers.size})`);
 
         broadcast(
           {
             type: 'SIGNAL_PEER_JOINED',
-            peer: { peerId, deviceId: newPeer.deviceId },
+            peer: { peerId, deviceId: newPeer.deviceId, remoteIp },
             timestamp: Date.now(),
           },
           peerId
@@ -248,19 +264,109 @@ server.on('upgrade', (req, socket, head) => {
         break;
       }
 
-      case 'SIGNAL_OFFER':
-      case 'SIGNAL_ANSWER':
+      case 'SIGNAL_OFFER': {
+        const { toPeerId, sdp } = msg;
+        if (!toPeerId) return;
+
+        console.log(`[Signaler] ➔ Forwarding SIGNAL_OFFER from ${currentPeerId} to ${toPeerId}`);
+        const target = peers.get(toPeerId);
+        const sender = peers.get(currentPeerId);
+        if (target) {
+          let forwardedMsg = msg;
+          if (sender?.remoteIp && typeof sdp === 'object' && sdp?.sdp) {
+            const unmaskedSdp = unmaskMdns(sdp.sdp, sender.remoteIp);
+            forwardedMsg = {
+              ...msg,
+              sdp: {
+                ...sdp,
+                sdp: unmaskedSdp,
+              },
+            };
+          }
+          sendJson(target, forwardedMsg);
+        } else {
+          console.warn(`[Signaler] ⚠ Target peer ${toPeerId} not found for OFFER`);
+          sendJson({ socket, peerId: currentPeerId }, {
+            type: 'SIGNAL_ERROR',
+            error: `Target peer ${toPeerId} not found for OFFER`,
+            timestamp: Date.now(),
+          });
+        }
+        break;
+      }
+
+      case 'SIGNAL_ANSWER': {
+        const { toPeerId, sdp } = msg;
+        if (!toPeerId) return;
+
+        console.log(`[Signaler] ➔ Forwarding SIGNAL_ANSWER from ${currentPeerId} to ${toPeerId}`);
+        const target = peers.get(toPeerId);
+        const sender = peers.get(currentPeerId);
+        if (target) {
+          let forwardedMsg = msg;
+          if (sender?.remoteIp && typeof sdp === 'object' && sdp?.sdp) {
+            const unmaskedSdp = unmaskMdns(sdp.sdp, sender.remoteIp);
+            forwardedMsg = {
+              ...msg,
+              sdp: {
+                ...sdp,
+                sdp: unmaskedSdp,
+              },
+            };
+          }
+          sendJson(target, forwardedMsg);
+        } else {
+          console.warn(`[Signaler] ⚠ Target peer ${toPeerId} not found for ANSWER`);
+          sendJson({ socket, peerId: currentPeerId }, {
+            type: 'SIGNAL_ERROR',
+            error: `Target peer ${toPeerId} not found for ANSWER`,
+            timestamp: Date.now(),
+          });
+        }
+        break;
+      }
+
       case 'SIGNAL_CANDIDATE': {
-        const { toPeerId } = msg;
+        const { toPeerId, candidate } = msg;
         if (!toPeerId) return;
 
         const target = peers.get(toPeerId);
+        const sender = peers.get(currentPeerId);
         if (target) {
-          sendJson(target, msg);
+          let forwardedMsg = msg;
+          if (sender?.remoteIp && typeof candidate === 'object' && candidate?.candidate) {
+            const originalCand = candidate.candidate;
+            const unmasked = unmaskMdns(originalCand, sender.remoteIp);
+            if (unmasked !== originalCand) {
+              console.log(`[Signaler] ⚡ Unmasked mDNS candidate from ${currentPeerId} with IP ${sender.remoteIp}`);
+            }
+            forwardedMsg = {
+              ...msg,
+              candidate: {
+                ...candidate,
+                candidate: unmasked,
+              },
+            };
+          }
+          console.log(`[Signaler] ➔ Forwarding SIGNAL_CANDIDATE from ${currentPeerId} to ${toPeerId}`);
+          sendJson(target, forwardedMsg);
         } else {
-          sendJson({ socket, peerId: currentPeerId }, {
-            type: 'SIGNAL_ERROR',
-            error: `Target peer ${toPeerId} not found`,
+          console.warn(`[Signaler] ⚠ Target peer ${toPeerId} not found for CANDIDATE`);
+        }
+        break;
+      }
+
+      case 'SIGNAL_RELAY': {
+        const { toPeerId, relayMessage } = msg;
+        if (!toPeerId || !relayMessage) return;
+
+        const target = peers.get(toPeerId);
+        if (target) {
+          sendJson(target, {
+            type: 'SIGNAL_RELAY',
+            fromPeerId: currentPeerId,
+            toPeerId,
+            relayMessage,
             timestamp: Date.now(),
           });
         }
@@ -295,6 +401,15 @@ function getLanIps() {
   }
   return ips;
 }
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\x1b[31m[Signaler Error] Port ${PORT} is already in use.\x1b[0m`);
+  } else {
+    console.error(`[Signaler Error]`, err);
+  }
+  process.exit(1);
+});
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log('====================================================');

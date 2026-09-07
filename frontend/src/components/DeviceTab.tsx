@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { DeviceProfile } from '../types';
 import { initialDeviceProfile } from '../data/mockData';
+import { useNexusServices } from '../context/ServiceContext';
+import { formatCoordinates, isInsecureLanOrigin } from '../services/api/geolocation';
+import { MapPin, Bell, HardDrive, Sun, Bluetooth, RefreshCw, CheckCircle2, AlertTriangle, ExternalLink } from 'lucide-react';
 
 interface DeviceTabProps {
   onShowToast: (msg: string) => void;
@@ -19,9 +22,22 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
   outboxCount = 0,
   localCacheCount = 0,
 }) => {
+  const {
+    currentLocation,
+    locationState,
+    requestLocation,
+    permissions,
+    refreshPermissions,
+    requestPermission,
+    testBluetooth,
+  } = useNexusServices();
+
   const [profile, setProfile] = useState<DeviceProfile>(initialDeviceProfile);
   const [showQrModal, setShowQrModal] = useState<boolean>(false);
   const [testSignalSending, setTestSignalSending] = useState<boolean>(false);
+  const [isRefreshingGps, setIsRefreshingGps] = useState<boolean>(false);
+  const [isTestingBt, setIsTestingBt] = useState<boolean>(false);
+  const [btTestResult, setBtTestResult] = useState<string | null>(null);
 
   // Real Hardware Battery Inspection
   const [batteryData, setBatteryData] = useState<{
@@ -98,126 +114,365 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
         ? 'Bluetooth LE Mesh'
         : key === 'wifi'
         ? 'Wi-Fi Direct P2P'
-        : 'Automatic Cloud Sync';
-    onShowToast(`${label} ${willBeActive ? 'enabled' : 'disabled'}`);
+        : 'Auto Cloud Sync';
+    onShowToast(`${label} ${willBeActive ? 'Enabled' : 'Disabled'}`);
   };
 
   const handleSendTestSignal = () => {
-    if (testSignalSending) return;
     setTestSignalSending(true);
-    onShowToast('Transmitting diagnostic beacon via WebRTC mesh transport...');
     setTimeout(() => {
       setTestSignalSending(false);
-      onShowToast('Emergency test signal relayed through local DataChannel');
-    }, 1600);
+      onShowToast('Simulated emergency ping relayed across local P2P subnet');
+    }, 1200);
   };
 
-  return (
-    <div className="flex-1 min-h-0 w-full flex flex-col px-4 pt-3 pb-8 gap-4 overflow-y-auto no-scrollbar">
-      {/* Profile Card */}
-      <div className="p-4 rounded-3xl bg-[#1c1b1b] border border-[#2a2a2a] flex items-center justify-between shadow-lg shrink-0">
-        <div className="flex items-center gap-3.5">
-          <div className="relative">
-            <img
-              src={profile.avatar}
-              alt={profile.name}
-              className="w-14 h-14 rounded-2xl object-cover border border-[#353534]"
-            />
-            <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-[#47e266] border-2 border-[#131313] flex items-center justify-center">
-              <span className="material-symbols-outlined text-[10px] text-[#003910] font-bold">
-                check
-              </span>
-            </span>
-          </div>
+  const handleRefreshGps = async () => {
+    setIsRefreshingGps(true);
+    try {
+      const res = await requestLocation(true);
+      if (res.success && res.coords) {
+        onShowToast(`GPS Position Locked: ${res.coords.latitude.toFixed(4)}, ${res.coords.longitude.toFixed(4)}`);
+      } else {
+        onShowToast(res.error || 'Failed to acquire GPS fix.');
+      }
+    } finally {
+      setIsRefreshingGps(false);
+    }
+  };
 
+  const handleRequestStorage = async () => {
+    const res = await requestPermission('storage');
+    if (res) {
+      onShowToast('IndexedDB storage locked against browser cache eviction.');
+    } else {
+      onShowToast('Storage persist not granted or not supported.');
+    }
+  };
+
+  const handleRequestNotifications = async () => {
+    const res = await requestPermission('notifications');
+    if (res) {
+      onShowToast('Emergency notification alerts enabled.');
+    } else {
+      onShowToast('Notifications permission not granted or unsupported.');
+    }
+  };
+
+  const handleToggleWakeLock = async () => {
+    const isCurrentlyActive = permissions.wakeLock === 'ACTIVE';
+    if (isCurrentlyActive) {
+      await requestPermission('wakeLock'); // will release or refresh
+      onShowToast('Screen wake lock released.');
+    } else {
+      const res = await requestPermission('wakeLock');
+      if (res) {
+        onShowToast('Screen wake lock active: Display will stay on during response.');
+      } else {
+        onShowToast('Wake lock unavailable on this origin/browser.');
+      }
+    }
+  };
+
+  const handleTestBluetooth = async () => {
+    setIsTestingBt(true);
+    setBtTestResult(null);
+    try {
+      const res = await testBluetooth();
+      if (res.success) {
+        setBtTestResult(`Connected: ${res.deviceName}`);
+        onShowToast(`Bluetooth Radio Tested: ${res.deviceName}`);
+      } else {
+        setBtTestResult(res.error || 'Scan closed');
+        onShowToast(res.error || 'Bluetooth scan cancelled.');
+      }
+    } finally {
+      setIsTestingBt(false);
+    }
+  };
+
+  const isInsecure = isInsecureLanOrigin();
+
+  return (
+    <div className="flex-1 w-full overflow-y-auto px-4 py-4 flex flex-col gap-4 pb-24">
+      {/* Node Identity Card */}
+      <div className="p-4 rounded-2xl bg-[#1c1b1b] border border-[#2a2a2a] flex items-center justify-between shadow-md shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-2xl bg-[#3e90ff]/20 border border-[#3e90ff]/40 flex items-center justify-center text-[#aac7ff] font-bold text-[16px]">
+            NX
+          </div>
           <div className="flex flex-col">
             <div className="flex items-center gap-2">
-              <span className="text-[17px] font-bold text-[#e5e2e1]">{profile.name}</span>
-              <span className="px-2 py-0.5 rounded-full bg-[#002957] text-[#aac7ff] text-[10px] font-semibold">
-                {profile.role}
+              <span className="font-bold text-[16px] text-[#e5e2e1]">
+                {profile.name}
+              </span>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#152a1b] text-[#47e266] border border-[#2f6f3a]">
+                FIELD NODE
               </span>
             </div>
-            <span className="text-[12px] text-[#c0c6d6] mt-0.5">{profile.sector}</span>
-            <span className="text-[11px] text-[#8b91a0] font-mono mt-0.5 truncate max-w-[190px]">
-              Node ID: {deviceId || 'DEV-LOCAL'}
+            <span className="font-mono text-[11px] text-[#8b91a0] mt-0.5">
+              Node ID: {deviceId || profile.handle}
             </span>
           </div>
         </div>
-
-        <button
-          onClick={() => onShowToast('Node profile verified via local key pair')}
-          className="w-9 h-9 rounded-xl bg-[#201f1f] text-[#c0c6d6] flex items-center justify-center hover:text-[#e5e2e1] active:scale-95 transition-all border border-[#2a2a2a] cursor-pointer"
-          title="Node Settings"
-        >
-          <span className="material-symbols-outlined text-[18px]">tune</span>
-        </button>
+        <div className="text-right">
+          <span className="text-[10px] text-[#8b91a0] uppercase tracking-wider block">
+            Mesh Role
+          </span>
+          <span className="text-[12px] font-semibold text-[#aac7ff]">
+            Relay Node
+          </span>
+        </div>
       </div>
 
-      {/* Device Health Honest Hardware Inspection */}
+      {/* Hardware Diagnostics Grid (Battery, Disk, GPS) */}
       <div className="grid grid-cols-2 gap-3 shrink-0">
         {/* Battery Health */}
-        <div className="p-4 rounded-2xl bg-[#1c1b1b] border border-[#2a2a2a] flex flex-col gap-2 shadow-sm">
-          <div className="flex items-center justify-between text-[#c0c6d6]">
-            <span className="text-[12px] font-medium">Battery Level</span>
+        <div className="p-3.5 rounded-2xl bg-[#1c1b1b] border border-[#2a2a2a] flex flex-col gap-2 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-medium text-[#8b91a0]">Battery Status</span>
             <span className="material-symbols-outlined text-[18px] text-[#47e266]">
-              {batteryData.isCharging ? 'battery_charging_full' : 'battery_std'}
+              {batteryData.isCharging ? 'battery_charging_full' : 'battery_full'}
             </span>
           </div>
-          <div className="flex items-baseline gap-1.5">
-            {batteryData.supported && batteryData.percent !== null ? (
-              <>
-                <span className="text-[22px] font-bold text-[#e5e2e1]">{batteryData.percent}%</span>
-                <span className="text-[11px] text-[#47e266] font-medium">
-                  {batteryData.isCharging ? 'Charging' : 'Optimal'}
-                </span>
-              </>
-            ) : (
-              <>
-                <span className="text-[19px] font-bold text-[#e5e2e1]">N/A</span>
-                <span className="text-[10px] text-[#8b91a0] font-medium">
-                  (Sim: 87%)
-                </span>
-              </>
+          <div className="flex items-baseline gap-1">
+            <span className="text-[22px] font-bold text-[#e5e2e1]">
+              {batteryData.percent !== null ? `${batteryData.percent}%` : 'N/A'}
+            </span>
+            {batteryData.isCharging !== null && (
+              <span className="text-[11px] text-[#47e266]">
+                {batteryData.isCharging ? 'Charging' : 'Discharging'}
+              </span>
             )}
           </div>
-          <div className="w-full h-1.5 rounded-full bg-[#2a2a2a] overflow-hidden">
-            <div
-              className="h-full rounded-full bg-[#47e266]"
-              style={{ width: `${batteryData.percent ?? 87}%` }}
-            />
-          </div>
-          <span className="text-[10px] text-[#8b91a0] leading-tight">
-            {batteryData.supported
-              ? 'Hardware battery API active'
-              : 'Hardware battery API not exposed by browser'}
+          <span className="text-[10px] text-[#8b91a0]">
+            {batteryData.supported ? 'Hardware power monitor active' : 'Battery API restricted by browser'}
           </span>
         </div>
 
-        {/* Storage / IndexedDB */}
-        <div className="p-4 rounded-2xl bg-[#1c1b1b] border border-[#2a2a2a] flex flex-col gap-2 shadow-sm">
-          <div className="flex items-center justify-between text-[#c0c6d6]">
-            <span className="text-[12px] font-medium">Offline Data Core</span>
-            <span className="material-symbols-outlined text-[18px] text-[#aac7ff]">
-              database
-            </span>
+        {/* Local Storage & Cache */}
+        <div className="p-3.5 rounded-2xl bg-[#1c1b1b] border border-[#2a2a2a] flex flex-col gap-2 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-medium text-[#8b91a0]">Offline Vault</span>
+            <HardDrive className="w-4 h-4 text-[#aac7ff]" />
           </div>
           <div className="flex items-baseline gap-1">
             <span className="text-[22px] font-bold text-[#e5e2e1]">
               {localCacheCount}
             </span>
-            <span className="text-[11.5px] text-[#c0c6d6]">incidents cached</span>
-          </div>
-          <div className="w-full h-1.5 rounded-full bg-[#2a2a2a] overflow-hidden">
-            <div
-              className="h-full rounded-full bg-[#3e90ff]"
-              style={{ width: `${Math.min(100, Math.max(12, localCacheCount * 20))}%` }}
-            />
+            <span className="text-[11.5px] text-[#c0c6d6]">cached reports</span>
           </div>
           <span className="text-[10px] text-[#8b91a0] leading-tight">
             {storageEstimate.usedKb !== null
               ? `IndexedDB ~${storageEstimate.usedKb} KB · ${outboxCount} outbox queued`
               : `IndexedDB active · ${outboxCount} outbox queued`}
           </span>
+        </div>
+      </div>
+
+      {/* FIELD READINESS & DEVICE PERMISSIONS SECTION */}
+      <div className="flex flex-col gap-2 shrink-0">
+        <div className="flex items-center justify-between px-1">
+          <h2 className="text-[15px] font-semibold text-[#e5e2e1] tracking-tight">
+            Field Readiness &amp; Hardware Permissions
+          </h2>
+          <span className="text-[10px] text-[#8b91a0] font-mono">
+            OFFLINE BY DEFAULT
+          </span>
+        </div>
+
+        <div className="flex flex-col rounded-2xl bg-[#1c1b1b] border border-[#2a2a2a] divide-y divide-[#2a2a2a]/60 shadow-md">
+          {/* A. Location / GPS */}
+          <div className="p-3.5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-[#3e90ff]/15 text-[#3e90ff] flex items-center justify-center shrink-0">
+                <MapPin className="w-4 h-4" />
+              </div>
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-semibold text-[#e5e2e1]">Physical GPS Location</span>
+                  <span className="text-[9px] px-1.5 py-0.2 rounded font-bold uppercase bg-[#3e90ff]/20 text-[#aac7ff]">
+                    Primary
+                  </span>
+                </div>
+                <span className="text-[11px] text-[#8b91a0] mt-0.5">
+                  {locationState === 'LIVE' && currentLocation
+                    ? `Live Fix: ${formatCoordinates(currentLocation.latitude, currentLocation.longitude, 4)} (±${currentLocation.accuracy}m)`
+                    : locationState === 'CACHED' && currentLocation
+                    ? `Cached Fix: ${formatCoordinates(currentLocation.latitude, currentLocation.longitude, 4)}`
+                    : locationState === 'ACQUIRING'
+                    ? 'Acquiring satellite fix...'
+                    : locationState === 'DENIED'
+                    ? 'Permission Denied'
+                    : locationState === 'MANUAL' && currentLocation
+                    ? `Manual: ${formatCoordinates(currentLocation.latitude, currentLocation.longitude, 4)}`
+                    : 'Location not acquired'}
+                </span>
+              </div>
+            </div>
+            <button
+              onClick={handleRefreshGps}
+              disabled={isRefreshingGps}
+              className="py-1 px-2.5 rounded-xl bg-[#2a2a2a] hover:bg-[#353534] text-[#e5e2e1] text-[11px] font-semibold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3 h-3 ${isRefreshingGps ? 'animate-spin' : ''}`} />
+              <span>{isRefreshingGps ? 'Fixing...' : 'Refresh'}</span>
+            </button>
+          </div>
+
+          {/* B. Persistent Storage */}
+          <div className="p-3.5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-[#47e266]/15 text-[#47e266] flex items-center justify-center shrink-0">
+                <HardDrive className="w-4 h-4" />
+              </div>
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-semibold text-[#e5e2e1]">Persistent Storage Vault</span>
+                  <span className="text-[9px] px-1.5 py-0.2 rounded font-bold uppercase bg-[#47e266]/20 text-[#47e266]">
+                    Recommended
+                  </span>
+                </div>
+                <span className="text-[11px] text-[#8b91a0] mt-0.5">
+                  {permissions.storage === 'GRANTED'
+                    ? 'Locked against low-disk cache eviction'
+                    : permissions.storage === 'NOT_SUPPORTED'
+                    ? 'Not supported by this browser'
+                    : 'Standard cache protection active'}
+                </span>
+              </div>
+            </div>
+            {permissions.storage !== 'GRANTED' && permissions.storage !== 'NOT_SUPPORTED' ? (
+              <button
+                onClick={handleRequestStorage}
+                className="py-1 px-2.5 rounded-xl bg-[#2a2a2a] hover:bg-[#353534] text-[#e5e2e1] text-[11px] font-semibold cursor-pointer"
+              >
+                Lock Vault
+              </button>
+            ) : (
+              <span className="text-[11px] text-[#47e266] font-semibold flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {permissions.storage === 'GRANTED' ? 'Locked' : 'Standard'}
+              </span>
+            )}
+          </div>
+
+          {/* C. Push Notifications */}
+          <div className="p-3.5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-[#ffb84e]/15 text-[#ffb84e] flex items-center justify-center shrink-0">
+                <Bell className="w-4 h-4" />
+              </div>
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-semibold text-[#e5e2e1]">Emergency Push Alerts</span>
+                  <span className="text-[9px] px-1.5 py-0.2 rounded font-bold uppercase bg-[#2a2a2a] text-[#c0c6d6]">
+                    Optional
+                  </span>
+                </div>
+                <span className="text-[11px] text-[#8b91a0] mt-0.5">
+                  {permissions.notifications === 'GRANTED'
+                    ? 'Active · Audio & banner alerts for P0 beacons'
+                    : permissions.notifications === 'DENIED'
+                    ? 'Alerts blocked in browser settings'
+                    : permissions.notifications === 'NOT_SUPPORTED'
+                    ? 'Notifications not supported'
+                    : 'Alert on incoming mesh emergencies'}
+                </span>
+              </div>
+            </div>
+            {permissions.notifications === 'GRANTED' ? (
+              <span className="text-[11px] text-[#47e266] font-semibold flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Enabled
+              </span>
+            ) : permissions.notifications !== 'NOT_SUPPORTED' ? (
+              <button
+                onClick={handleRequestNotifications}
+                className="py-1 px-2.5 rounded-xl bg-[#2a2a2a] hover:bg-[#353534] text-[#e5e2e1] text-[11px] font-semibold cursor-pointer"
+              >
+                Enable
+              </button>
+            ) : (
+              <span className="text-[11px] text-[#8b91a0]">N/A</span>
+            )}
+          </div>
+
+          {/* D. Screen Wake Lock */}
+          <div className="p-3.5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-[#aac7ff]/15 text-[#aac7ff] flex items-center justify-center shrink-0">
+                <Sun className="w-4 h-4" />
+              </div>
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-semibold text-[#e5e2e1]">Screen Wake Lock</span>
+                  <span className="text-[9px] px-1.5 py-0.2 rounded font-bold uppercase bg-[#2a2a2a] text-[#c0c6d6]">
+                    Optional
+                  </span>
+                </div>
+                <span className="text-[11px] text-[#8b91a0] mt-0.5">
+                  {permissions.wakeLock === 'ACTIVE'
+                    ? 'Active · Display will not sleep during operations'
+                    : permissions.wakeLock === 'NOT_SUPPORTED'
+                    ? 'WakeLock not supported by browser'
+                    : 'Prevent phone screen from sleeping'}
+                </span>
+              </div>
+            </div>
+            {permissions.wakeLock !== 'NOT_SUPPORTED' ? (
+              <button
+                onClick={handleToggleWakeLock}
+                className={`py-1 px-2.5 rounded-xl text-[11px] font-semibold cursor-pointer ${
+                  permissions.wakeLock === 'ACTIVE'
+                    ? 'bg-[#152a1b] text-[#47e266] border border-[#2f6f3a]'
+                    : 'bg-[#2a2a2a] hover:bg-[#353534] text-[#e5e2e1]'
+                }`}
+              >
+                {permissions.wakeLock === 'ACTIVE' ? 'Keep Awake ✓' : 'Keep Awake'}
+              </button>
+            ) : (
+              <span className="text-[11px] text-[#8b91a0]">N/A</span>
+            )}
+          </div>
+
+          {/* E. Bluetooth Radio (Strictly OPTIONAL / EXPERIMENTAL) */}
+          <div className="p-3.5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-[#3e90ff]/15 text-[#3e90ff] flex items-center justify-center shrink-0">
+                <Bluetooth className="w-4 h-4" />
+              </div>
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-semibold text-[#e5e2e1]">Bluetooth LE Radio</span>
+                  <span className="text-[9px] px-1.5 py-0.2 rounded font-bold uppercase bg-[#353534] text-[#ffb84e]">
+                    Optional / Experimental
+                  </span>
+                </div>
+                <span className="text-[11px] text-[#8b91a0] mt-0.5">
+                  {btTestResult
+                    ? btTestResult
+                    : permissions.bluetooth === 'NOT_SUPPORTED'
+                    ? 'Web Bluetooth not supported by this browser'
+                    : permissions.bluetooth === 'INSECURE_ORIGIN'
+                    ? 'Requires HTTPS for Bluetooth device picker'
+                    : 'Future transport testing (WebRTC is primary)'}
+                </span>
+              </div>
+            </div>
+            {permissions.bluetooth !== 'NOT_SUPPORTED' && !isInsecure ? (
+              <button
+                onClick={handleTestBluetooth}
+                disabled={isTestingBt}
+                className="py-1 px-2.5 rounded-xl bg-[#2a2a2a] hover:bg-[#353534] text-[#e5e2e1] text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+              >
+                {isTestingBt ? 'Scanning...' : 'Test Scan'}
+              </button>
+            ) : (
+              <span className="text-[10px] text-[#8b91a0] font-mono">
+                {isInsecure ? 'HTTP Mode' : 'Unsupported'}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -256,7 +511,7 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
               <span className="text-[12px] text-[#c0c6d6] mt-0.5 leading-snug">
                 {isInternetConnected
                   ? 'Connected to cellular/satellite uplink. Live incident reports bridge directly to Central Command servers.'
-                  : 'Zero-internet disaster mode. Packets hop exclusively peer-to-peer over local BLE and WebRTC.'}
+                  : 'Zero-internet disaster mode. Packets hop exclusively peer-to-peer over local WebRTC DataChannel.'}
               </span>
             </div>
           </div>
@@ -278,67 +533,36 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
         </div>
       </div>
 
-      {/* Mesh Protocols */}
+      {/* Mesh Transport Architecture */}
       <div className="flex flex-col gap-3 shrink-0">
         <h2 className="text-[15px] font-semibold text-[#e5e2e1] px-1 tracking-tight">
-          Mesh Protocols
+          Mesh Transport Architecture
         </h2>
 
         <div className="flex flex-col rounded-2xl bg-[#1c1b1b] border border-[#2a2a2a] divide-y divide-[#2a2a2a]/60 shadow-md">
-          {/* BLE Mesh */}
-          <div className="p-4 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-[#3e90ff]/15 text-[#aac7ff] flex items-center justify-center">
-                <span className="material-symbols-outlined text-[18px]">bluetooth</span>
-              </div>
-              <div className="flex flex-col">
-                <span className="text-[14px] font-medium text-[#e5e2e1]">Bluetooth LE Mesh</span>
-                <span className="text-[11px] text-[#c0c6d6]">
-                  Low energy peer hopping up to 100m
-                </span>
-              </div>
-            </div>
-            <button
-              onClick={() => toggleProtocol('ble')}
-              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                profile.protocols.ble ? 'bg-[#3e90ff]' : 'bg-[#414754]'
-              }`}
-            >
-              <span
-                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                  profile.protocols.ble ? 'translate-x-5' : 'translate-x-0'
-                }`}
-              />
-            </button>
-          </div>
-
-          {/* Wi-Fi Direct */}
+          {/* WebRTC DataChannel (Primary MVP Transport) */}
           <div className="p-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-xl bg-[#47e266]/15 text-[#47e266] flex items-center justify-center">
-                <span className="material-symbols-outlined text-[18px]">wifi_tethering</span>
+                <span className="material-symbols-outlined text-[18px]">hub</span>
               </div>
               <div className="flex flex-col">
-                <span className="text-[14px] font-medium text-[#e5e2e1]">
-                  Wi-Fi Direct Peer-to-Peer
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[14px] font-medium text-[#e5e2e1]">
+                    Local Wi-Fi / Hotspot + WebRTC
+                  </span>
+                  <span className="text-[9px] px-1.5 py-0.2 rounded font-bold uppercase bg-[#152a1b] text-[#47e266] border border-[#2f6f3a]">
+                    Active Transport
+                  </span>
+                </div>
                 <span className="text-[11px] text-[#c0c6d6]">
-                  High bandwidth file &amp; telemetry sync
+                  Store-Carry-Forward relay over RTCDataChannel (0-Cloud)
                 </span>
               </div>
             </div>
-            <button
-              onClick={() => toggleProtocol('wifi')}
-              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                profile.protocols.wifi ? 'bg-[#3e90ff]' : 'bg-[#414754]'
-              }`}
-            >
-              <span
-                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                  profile.protocols.wifi ? 'translate-x-5' : 'translate-x-0'
-                }`}
-              />
-            </button>
+            <span className="text-[11px] text-[#47e266] font-semibold">
+              CONNECTED
+            </span>
           </div>
 
           {/* Auto Cloud Sync */}
@@ -349,10 +573,10 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
               </div>
               <div className="flex flex-col">
                 <span className="text-[14px] font-medium text-[#e5e2e1]">
-                  Automatic Cloud Sync
+                  Automatic Cloud Uplink
                 </span>
                 <span className="text-[11px] text-[#c0c6d6]">
-                  Upload cached incident logs once uplink detected
+                  Upload cached incident logs once internet detected
                 </span>
               </div>
             </div>
@@ -429,7 +653,6 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
             {/* High fidelity QR Matrix simulation */}
             <div className="p-4 bg-white rounded-2xl shadow-inner my-1">
               <svg className="w-48 h-48" viewBox="0 0 100 100" fill="black">
-                {/* QR corner finders */}
                 <rect x="5" y="5" width="28" height="28" fill="black" />
                 <rect x="9" y="9" width="20" height="20" fill="white" />
                 <rect x="13" y="13" width="12" height="12" fill="black" />
@@ -442,7 +665,6 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
                 <rect x="9" y="71" width="20" height="20" fill="white" />
                 <rect x="13" y="75" width="12" height="12" fill="black" />
 
-                {/* Randomized data grid cells */}
                 <rect x="38" y="8" width="5" height="5" />
                 <rect x="46" y="8" width="5" height="5" />
                 <rect x="54" y="8" width="5" height="5" />

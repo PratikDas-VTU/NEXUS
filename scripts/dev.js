@@ -17,11 +17,16 @@ if (!fs.existsSync(viteBin)) {
   viteBin = path.resolve(rootDir, 'node_modules', 'vite', 'bin', 'vite.js');
 }
 
+const isHttps = process.argv.includes('--https') || process.env.HTTPS === 'true';
+
 console.log('\x1b[1m\x1b[35m====================================================\x1b[0m');
 console.log('\x1b[1m\x1b[36m🚀 NEXUS — Starting Full Stack (Signaler + Frontend)\x1b[0m');
 console.log('\x1b[1m\x1b[35m====================================================\x1b[0m');
 console.log('\x1b[36m[SIGNALER]\x1b[0m Target: ws://localhost:8080 & http://localhost:8080/status');
-console.log('\x1b[32m[FRONTEND]\x1b[0m Target: http://localhost:3000 (LAN: --host=0.0.0.0)');
+console.log(`\x1b[32m[FRONTEND]\x1b[0m Protocol: ${isHttps ? 'HTTPS (Secure Origin)' : 'HTTP (Zero-SSL)'} Target: ${isHttps ? 'https' : 'http'}://localhost:3000`);
+if (!isHttps) {
+  console.log('\x1b[33m[TIP]\x1b[0m For native mobile Chrome GPS & Bluetooth, run: npm run dev -- --https');
+}
 console.log('\x1b[1m\x1b[35m====================================================\x1b[0m\n');
 
 function pipeWithPrefix(stream, prefix, colorCode) {
@@ -49,7 +54,11 @@ pipeWithPrefix(signaler.stdout, '[SIGNALER]', '\x1b[36m');
 pipeWithPrefix(signaler.stderr, '[SIGNALER ERR]', '\x1b[31m');
 
 // 2. Launch Vite Frontend Dev Server directly with Node
-const frontend = spawn(nodeCmd, [viteBin, '--port=3000', '--host=0.0.0.0'], {
+const viteArgs = [viteBin, '--port=3000', '--host=0.0.0.0'];
+if (isHttps) {
+  viteArgs.push('--https');
+}
+const frontend = spawn(nodeCmd, viteArgs, {
   cwd: frontendDir,
   env: process.env,
   stdio: ['inherit', 'pipe', 'pipe'],

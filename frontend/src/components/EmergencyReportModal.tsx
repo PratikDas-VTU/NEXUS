@@ -1,13 +1,15 @@
-import React, { useState } from 'react';
-import { X, MapPin, AlertTriangle, CheckCircle2, RefreshCw, User, ShieldAlert } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, MapPin, AlertTriangle, CheckCircle2, RefreshCw, User, ShieldAlert, Edit3 } from 'lucide-react';
 import type { DraftIncident, IncidentType, IncidentPriority } from '../../../shared/types';
-import { getCurrentPosition, formatCoordinates } from '../services/api/geolocation';
+import { GeolocationCoordinates, LocationState, formatCoordinates, getCurrentPosition } from '../services/api/geolocation';
 
 interface EmergencyReportModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSubmit: (draft: DraftIncident) => Promise<void>;
   isInternetConnected?: boolean;
+  currentLocation?: GeolocationCoordinates | null;
+  locationState?: LocationState;
 }
 
 type NeedCategory = 'medical' | 'food' | 'water' | 'shelter' | 'rescue' | 'safety' | 'other';
@@ -27,21 +29,49 @@ export const EmergencyReportModal: React.FC<EmergencyReportModalProps> = ({
   onClose,
   onSubmit,
   isInternetConnected = false,
+  currentLocation = null,
+  locationState = 'IDLE',
 }) => {
   const [selectedNeed, setSelectedNeed] = useState<NeedCategory>('medical');
   const [urgency, setUrgency] = useState<IncidentPriority>('P0');
   const [peopleAffected, setPeopleAffected] = useState<number>(1);
   const [description, setDescription] = useState<string>('');
   
-  // Location state
-  const [locationStatus, setLocationStatus] = useState<'idle' | 'loading' | 'success' | 'error' | 'manual'>('idle');
-  const [coords, setCoords] = useState<{ latitude: number; longitude: number; accuracy?: number } | null>(null);
+  // Location source priority: 1. Current LIVE GPS, 2. Last known CACHED GPS, 3. Manual
+  const [locationSource, setLocationSource] = useState<'LIVE' | 'CACHED' | 'MANUAL'>('MANUAL');
+  const [latInput, setLatInput] = useState<string>('12.9716');
+  const [lngInput, setLngInput] = useState<string>('77.5946');
+  const [accuracy, setAccuracy] = useState<number | undefined>(undefined);
+  const [isRefreshingGps, setIsRefreshingGps] = useState<boolean>(false);
   const [locationError, setLocationError] = useState<string>('');
-  const [manualLat, setManualLat] = useState<string>('12.9716');
-  const [manualLng, setManualLng] = useState<string>('77.5946');
 
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [formError, setFormError] = useState<string>('');
+
+  // Synchronize initial location upon opening
+  useEffect(() => {
+    if (!isOpen) return;
+
+    if (currentLocation) {
+      setLatInput(currentLocation.latitude.toFixed(5));
+      setLngInput(currentLocation.longitude.toFixed(5));
+      setAccuracy(currentLocation.accuracy);
+      if (currentLocation.source === 'LIVE') {
+        setLocationSource('LIVE');
+      } else if (currentLocation.source === 'CACHED') {
+        setLocationSource('CACHED');
+      } else {
+        setLocationSource('MANUAL');
+      }
+    } else {
+      setLocationSource('MANUAL');
+      setLatInput('12.9716');
+      setLngInput('77.5946');
+      setAccuracy(undefined);
+    }
+    setLocationError('');
+    setFormError('');
+  }, [isOpen, currentLocation]);
 
   if (!isOpen) return null;
 
@@ -50,50 +80,52 @@ export const EmergencyReportModal: React.FC<EmergencyReportModalProps> = ({
     setUrgency(NEED_CONFIG[need].defaultPriority);
   };
 
-  const handleGetLocation = async () => {
-    setLocationStatus('loading');
+  const handleRefreshGps = async () => {
+    setIsRefreshingGps(true);
     setLocationError('');
-    setFormError('');
-
-    const res = await getCurrentPosition();
-    if (res.success && res.coords) {
-      setCoords({
-        latitude: res.coords.latitude,
-        longitude: res.coords.longitude,
-        accuracy: res.coords.accuracy,
+    try {
+      const res = await getCurrentPosition({
+        enableHighAccuracy: true,
+        timeout: 10000,
       });
-      setLocationStatus('success');
-    } else {
-      setLocationError(res.error || 'Failed to obtain GPS fix.');
-      setLocationStatus('error');
+      if (res.success && res.coords) {
+        setLatInput(res.coords.latitude.toFixed(5));
+        setLngInput(res.coords.longitude.toFixed(5));
+        setAccuracy(res.coords.accuracy);
+        setLocationSource('LIVE');
+      } else {
+        setLocationError(res.error || 'Failed to acquire GPS fix. You can edit coordinates manually.');
+      }
+    } catch {
+      setLocationError('GPS request interrupted. Manual coordinates active.');
+    } finally {
+      setIsRefreshingGps(false);
     }
+  };
+
+  const handleManualEditLat = (val: string) => {
+    setLatInput(val);
+    setLocationSource('MANUAL');
+  };
+
+  const handleManualEditLng = (val: string) => {
+    setLngInput(val);
+    setLocationSource('MANUAL');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError('');
 
-    let finalLat: number | undefined;
-    let finalLng: number | undefined;
+    const lat = parseFloat(latInput);
+    const lng = parseFloat(lngInput);
 
-    if (locationStatus === 'success' && coords) {
-      finalLat = coords.latitude;
-      finalLng = coords.longitude;
-    } else if (locationStatus === 'manual') {
-      const lat = parseFloat(manualLat);
-      const lng = parseFloat(manualLng);
-      if (isNaN(lat) || lat < -90 || lat > 90) {
-        setFormError('Please enter a valid latitude (-90 to +90).');
-        return;
-      }
-      if (isNaN(lng) || lng < -180 || lng > 180) {
-        setFormError('Please enter a valid longitude (-180 to +180).');
-        return;
-      }
-      finalLat = lat;
-      finalLng = lng;
-    } else {
-      setFormError('Location is required. Tap "Use My Location" or "Enter Location Manually".');
+    if (isNaN(lat) || lat < -90 || lat > 90) {
+      setFormError('Please enter a valid latitude (-90 to +90).');
+      return;
+    }
+    if (isNaN(lng) || lng < -180 || lng > 180) {
+      setFormError('Please enter a valid longitude (-180 to +180).');
       return;
     }
 
@@ -101,8 +133,8 @@ export const EmergencyReportModal: React.FC<EmergencyReportModalProps> = ({
     const draft: DraftIncident = {
       type: needInfo.defaultType,
       priority: urgency,
-      latitude: finalLat,
-      longitude: finalLng,
+      latitude: lat,
+      longitude: lng,
       peopleAffected: Math.max(1, peopleAffected),
       description: description.trim() || `${needInfo.label} Emergency assistance requested via NEXUS broadcast channel.`,
     };
@@ -138,55 +170,53 @@ export const EmergencyReportModal: React.FC<EmergencyReportModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="w-7 h-7 rounded-lg bg-[#201f1f] hover:bg-[#2a2a2a] text-[#c0c6d6] hover:text-[#e5e2e1] flex items-center justify-center cursor-pointer transition-colors"
+            className="w-7 h-7 rounded-full bg-[#2a2a2a] hover:bg-[#353534] flex items-center justify-center text-[#c0c6d6] cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-4 flex flex-col gap-3.5 text-xs">
-          {formError && (
-            <div className="p-2.5 rounded-lg bg-[#93000a]/30 border border-[#ffb4ab]/40 text-[#ffdad6] text-[11px] flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-[#ffb4ab] shrink-0" />
-              <span>{formError}</span>
-            </div>
-          )}
-
-          {/* 1. What Do You Need? */}
+        <form onSubmit={handleSubmit} className="p-4 flex flex-col gap-4 overflow-y-auto max-h-[75vh]">
+          {/* 1. Need Category Selection */}
           <div className="flex flex-col gap-1.5">
             <label className="text-[11px] font-bold uppercase tracking-wider text-[#aac7ff]">
-              What Do You Need?
+              1. What is the Emergency?
             </label>
             <div className="grid grid-cols-4 gap-1.5">
-              {(Object.keys(NEED_CONFIG) as NeedCategory[]).map((key) => {
-                const config = NEED_CONFIG[key];
-                const isSelected = selectedNeed === key;
+              {(Object.keys(NEED_CONFIG) as NeedCategory[]).map((need) => {
+                const item = NEED_CONFIG[need];
+                const isSelected = selectedNeed === need;
                 return (
                   <button
-                    key={key}
+                    key={need}
                     type="button"
-                    onClick={() => handleSelectNeed(key)}
-                    className={`flex flex-col items-center justify-center p-2 rounded-xl border text-[11px] font-semibold transition-all cursor-pointer ${
+                    onClick={() => handleSelectNeed(need)}
+                    className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all cursor-pointer ${
                       isSelected
-                        ? 'bg-[#3e90ff]/20 border-[#3e90ff] text-[#aac7ff] shadow-xs'
-                        : 'bg-[#131313] border-[#2a2a2a] text-[#8b91a0] hover:text-[#e5e2e1] hover:border-[#353534]'
+                        ? 'bg-[#3e90ff]/20 border-[#3e90ff] text-[#e5e2e1] shadow-[0_0_12px_rgba(62,144,255,0.2)]'
+                        : 'bg-[#131313] border-[#2a2a2a] text-[#8b91a0] hover:border-[#3a3a3a] hover:text-[#c0c6d6]'
                     }`}
                   >
-                    <span className="material-symbols-outlined text-[18px] mb-0.5">
-                      {config.icon}
+                    <span className={`material-symbols-outlined text-[20px] ${isSelected ? 'text-[#3e90ff]' : 'text-[#8b91a0]'}`}>
+                      {item.icon}
                     </span>
-                    <span>{config.label}</span>
+                    <span className="text-[10px] font-semibold mt-1 truncate max-w-full">
+                      {item.label}
+                    </span>
                   </button>
                 );
               })}
             </div>
           </div>
 
-          {/* 2. Urgency Level */}
+          {/* 2. Urgency Selection */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-bold uppercase tracking-wider text-[#aac7ff]">
-              Urgency
+            <label className="text-[11px] font-bold uppercase tracking-wider text-[#aac7ff] flex items-center justify-between">
+              <span>2. Priority Level</span>
+              <span className="text-[10px] text-[#8b91a0] font-normal normal-case">
+                {urgency === 'P0' ? 'Immediate danger to life' : urgency === 'P1' ? 'High risk if unattended' : 'Stable situation'}
+              </span>
             </label>
             <div className="grid grid-cols-3 gap-2">
               <button
@@ -194,11 +224,11 @@ export const EmergencyReportModal: React.FC<EmergencyReportModalProps> = ({
                 onClick={() => setUrgency('P0')}
                 className={`py-2 px-2 rounded-xl border text-[11px] font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
                   urgency === 'P0'
-                    ? 'bg-[#93000a] text-[#ffdad6] border-[#ffb4ab]'
+                    ? 'bg-[#93000a] text-[#ffb4ab] border-[#ffb4ab]'
                     : 'bg-[#131313] border-[#2a2a2a] text-[#8b91a0]'
                 }`}
               >
-                <span className="w-2 h-2 rounded-full bg-[#ffb4ab] animate-pulse" />
+                <span className="w-2 h-2 rounded-full bg-[#ffb4ab] animate-ping" />
                 <span>P0 Critical</span>
               </button>
 
@@ -207,11 +237,11 @@ export const EmergencyReportModal: React.FC<EmergencyReportModalProps> = ({
                 onClick={() => setUrgency('P1')}
                 className={`py-2 px-2 rounded-xl border text-[11px] font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
                   urgency === 'P1'
-                    ? 'bg-amber-950 text-amber-200 border-amber-400'
+                    ? 'bg-[#5c3e00] text-[#ffb84e] border-[#ffb84e]'
                     : 'bg-[#131313] border-[#2a2a2a] text-[#8b91a0]'
                 }`}
               >
-                <span className="w-2 h-2 rounded-full bg-amber-400" />
+                <span className="w-2 h-2 rounded-full bg-[#ffb84e]" />
                 <span>P1 Urgent</span>
               </button>
 
@@ -257,165 +287,120 @@ export const EmergencyReportModal: React.FC<EmergencyReportModalProps> = ({
             </div>
           </div>
 
-          {/* 4. Real Location with GPS / Fallback */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-bold uppercase tracking-wider text-[#aac7ff] flex items-center justify-between">
-              <span>Location</span>
-              {locationStatus === 'success' && coords && (
-                <span className="text-[#47e266] font-normal normal-case text-[10px]">
-                  ✓ GPS Locked (±{coords.accuracy}m)
-                </span>
-              )}
-              {locationStatus === 'manual' && (
-                <span className="text-amber-400 font-normal normal-case text-[10px]">
-                  Manual Location
-                </span>
-              )}
-            </label>
+          {/* 4. Real Location with Auto-Population & Source Tracking */}
+          <div className="flex flex-col gap-2 p-3 rounded-2xl bg-[#131313] border border-[#2a2a2a]">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-bold uppercase tracking-wider text-[#aac7ff] flex items-center gap-1.5">
+                <MapPin className="w-3.5 h-3.5 text-[#3e90ff]" />
+                <span>Incident Coordinates</span>
+              </label>
 
-            {locationStatus === 'idle' && (
+              {/* Source Tag */}
+              {locationSource === 'LIVE' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#152a1b] text-[#47e266] border border-[#2f6f3a]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#47e266] animate-pulse" />
+                  📍 LIVE GPS {accuracy ? `(±${accuracy}m)` : ''}
+                </span>
+              )}
+              {locationSource === 'CACHED' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#262118] text-[#ffb84e] border border-[#634e26]">
+                  📦 LAST KNOWN LOCATION
+                </span>
+              )}
+              {locationSource === 'MANUAL' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#1f232d] text-[#aac7ff] border border-[#2f3952]">
+                  ✎ MANUAL LOCATION
+                </span>
+              )}
+            </div>
+
+            {/* Latitude & Longitude Inputs (Editable) */}
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] text-[#8b91a0] block mb-0.5">Latitude</label>
+                <input
+                  type="text"
+                  value={latInput}
+                  onChange={(e) => handleManualEditLat(e.target.value)}
+                  placeholder="12.9716"
+                  className="w-full bg-[#1c1b1b] border border-[#2a2a2a] rounded-xl px-2.5 py-1.5 text-xs text-[#e5e2e1] font-mono focus:border-[#3e90ff] focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-[#8b91a0] block mb-0.5">Longitude</label>
+                <input
+                  type="text"
+                  value={lngInput}
+                  onChange={(e) => handleManualEditLng(e.target.value)}
+                  placeholder="77.5946"
+                  className="w-full bg-[#1c1b1b] border border-[#2a2a2a] rounded-xl px-2.5 py-1.5 text-xs text-[#e5e2e1] font-mono focus:border-[#3e90ff] focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Location Tools: Refresh GPS button */}
+            <div className="flex items-center justify-between pt-1">
+              <span className="text-[10px] text-[#8b91a0]">
+                {locationSource === 'MANUAL'
+                  ? 'Manual input active · Always editable'
+                  : 'Coordinates auto-populated from sensor'}
+              </span>
               <button
                 type="button"
-                onClick={handleGetLocation}
-                className="w-full py-2.5 rounded-xl bg-[#201f1f] hover:bg-[#2a2a2a] border border-[#3e90ff]/40 text-[#aac7ff] font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all"
+                onClick={handleRefreshGps}
+                disabled={isRefreshingGps}
+                className="text-[11px] text-[#3e90ff] hover:underline flex items-center gap-1 cursor-pointer font-medium disabled:opacity-50"
               >
-                <MapPin className="w-4 h-4 text-[#3e90ff]" />
-                <span>Use My Location (GPS)</span>
+                <RefreshCw className={`w-3 h-3 ${isRefreshingGps ? 'animate-spin' : ''}`} />
+                <span>{isRefreshingGps ? 'Acquiring...' : 'Refresh GPS'}</span>
               </button>
-            )}
+            </div>
 
-            {locationStatus === 'loading' && (
-              <div className="w-full py-2.5 rounded-xl bg-[#201f1f] border border-[#2a2a2a] text-[#c0c6d6] flex items-center justify-center gap-2 font-medium">
-                <RefreshCw className="w-4 h-4 animate-spin text-[#3e90ff]" />
-                <span>Acquiring GPS coordinates...</span>
-              </div>
-            )}
-
-            {locationStatus === 'success' && coords && (
-              <div className="p-2.5 rounded-xl bg-[#122b1b] border border-[#2f6f3a] flex items-center justify-between text-[#47e266]">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
-                  <div className="flex flex-col">
-                    <span className="font-bold text-[11px] text-[#e5e2e1]">GPS Location Captured</span>
-                    <span className="text-[10px] text-[#c0c6d6] font-mono">
-                      {formatCoordinates(coords.latitude, coords.longitude, 5)}
-                    </span>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleGetLocation}
-                  className="text-[10px] text-[#aac7ff] hover:underline cursor-pointer"
-                >
-                  Refresh
-                </button>
-              </div>
-            )}
-
-            {locationStatus === 'error' && (
-              <div className="flex flex-col gap-2 p-2.5 rounded-xl bg-[#291715] border border-[#5e2b24]">
-                <div className="flex items-start gap-2 text-[#ffb4ab]">
-                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <div className="flex flex-col">
-                    <span className="font-bold text-[11px]">Location Unavailable</span>
-                    <span className="text-[10px] text-[#c0c6d6]">{locationError}</span>
-                  </div>
-                </div>
-                <div className="flex gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={handleGetLocation}
-                    className="flex-1 py-1.5 rounded-lg bg-[#201f1f] hover:bg-[#2a2a2a] text-[#e5e2e1] text-[10.5px] font-semibold cursor-pointer"
-                  >
-                    Try Again
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLocationStatus('manual')}
-                    className="flex-1 py-1.5 rounded-lg bg-[#3e90ff]/20 hover:bg-[#3e90ff]/30 text-[#aac7ff] text-[10.5px] font-semibold border border-[#3e90ff]/40 cursor-pointer"
-                  >
-                    Enter Manually
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {locationStatus === 'manual' && (
-              <div className="p-2.5 rounded-xl bg-[#131313] border border-[#2a2a2a] flex flex-col gap-2">
-                <span className="text-[10.5px] text-amber-400 font-medium">
-                  Manual Coordinates (Enter Latitude &amp; Longitude)
-                </span>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <span className="text-[9.5px] text-[#8b91a0] block mb-0.5">Latitude:</span>
-                    <input
-                      type="number"
-                      step="any"
-                      value={manualLat}
-                      onChange={(e) => setManualLat(e.target.value)}
-                      placeholder="12.9716"
-                      className="w-full bg-[#1c1b1b] border border-[#2a2a2a] rounded-lg px-2 py-1 text-[#e5e2e1] text-xs font-mono focus:border-[#3e90ff] focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <span className="text-[9.5px] text-[#8b91a0] block mb-0.5">Longitude:</span>
-                    <input
-                      type="number"
-                      step="any"
-                      value={manualLng}
-                      onChange={(e) => setManualLng(e.target.value)}
-                      placeholder="77.5946"
-                      className="w-full bg-[#1c1b1b] border border-[#2a2a2a] rounded-lg px-2 py-1 text-[#e5e2e1] text-xs font-mono focus:border-[#3e90ff] focus:outline-none"
-                    />
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleGetLocation}
-                  className="text-[10px] text-[#aac7ff] hover:underline self-end cursor-pointer"
-                >
-                  Switch to GPS
-                </button>
+            {locationError && (
+              <div className="p-2 rounded-xl bg-[#2c1515] border border-[#662020] text-[#ffb4ab] text-[10.5px] flex items-start gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>{locationError}</span>
               </div>
             )}
           </div>
 
-          {/* 5. Optional Description */}
-          <div className="flex flex-col gap-1">
+          {/* 5. Additional Details */}
+          <div className="flex flex-col gap-1.5">
             <label className="text-[11px] font-bold uppercase tracking-wider text-[#aac7ff]">
-              Description (Optional)
+              5. Details / Situation (Optional)
             </label>
-            <input
-              type="text"
+            <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="e.g. Person collapsed near north gate, need AED"
-              className="w-full bg-[#131313] border border-[#2a2a2a] rounded-xl px-3 py-2 text-[#e5e2e1] placeholder-[#8b91a0] focus:border-[#3e90ff] focus:outline-none"
+              placeholder="e.g. 2nd floor balcony, elderly person trapped, water level rising fast..."
+              rows={2}
+              className="w-full bg-[#131313] border border-[#2a2a2a] rounded-xl p-2.5 text-xs text-[#e5e2e1] focus:border-[#3e90ff] focus:outline-none resize-none"
             />
           </div>
 
+          {formError && (
+            <div className="p-2.5 rounded-xl bg-[#93000a]/20 border border-[#93000a] text-[#ffb4ab] text-xs flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{formError}</span>
+            </div>
+          )}
+
           {/* Submit Action */}
-          <div className="pt-2 flex gap-2">
+          <div className="flex gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-3 rounded-xl bg-[#201f1f] hover:bg-[#2a2a2a] text-[#8b91a0] font-semibold text-xs cursor-pointer"
+            >
+              Cancel
+            </button>
             <button
               type="submit"
               disabled={isSubmitting}
-              className={`flex-1 h-11 rounded-xl font-bold text-[13px] flex items-center justify-center gap-2 cursor-pointer transition-all shadow-md active:scale-[0.99] ${
-                isSubmitting
-                  ? 'bg-[#93000a] text-[#ffdad6]'
-                  : 'bg-[#ffb4ab] hover:bg-[#ffc2ba] text-[#690005]'
-              }`}
+              className="flex-2 py-3 rounded-xl bg-[#ba1a1a] hover:bg-[#93000a] text-[#ffffff] font-bold text-xs flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_16px_rgba(186,26,26,0.3)] disabled:opacity-50"
             >
-              {isSubmitting ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Broadcasting Beacon...</span>
-                </>
-              ) : (
-                <>
-                  <span className="material-symbols-outlined text-[18px]">podcasts</span>
-                  <span>BROADCAST EMERGENCY</span>
-                </>
-              )}
+              <ShieldAlert className="w-4 h-4" />
+              <span>{isSubmitting ? 'Relaying to Vault...' : 'Broadcast Distress'}</span>
             </button>
           </div>
         </form>

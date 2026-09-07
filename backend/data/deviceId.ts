@@ -13,6 +13,27 @@ const DEVICE_STORAGE_KEY = 'nexus_device_id';
 const DEVICE_RECORD_ID = 'local'; // Singleton key in Dexie device table
 
 /**
+ * Synchronous initial ID retriever for React components to avoid 'DEV-INIT' flicker.
+ */
+export function getSynchronousDeviceId(nodeParam?: string | null): string {
+  if (nodeParam) {
+    return `DEV-${nodeParam.toUpperCase()}`;
+  }
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const stored = localStorage.getItem(DEVICE_STORAGE_KEY);
+      if (stored) return stored;
+      const generated = uuidv4();
+      localStorage.setItem(DEVICE_STORAGE_KEY, generated);
+      return generated;
+    }
+  } catch {
+    // localStorage not available
+  }
+  return uuidv4();
+}
+
+/**
  * Get the persistent device ID.
  * 
  * Resolution order:

@@ -13,6 +13,7 @@ export type SignalingMessageType =
   | 'SIGNAL_OFFER'
   | 'SIGNAL_ANSWER'
   | 'SIGNAL_CANDIDATE'
+  | 'SIGNAL_RELAY'
   | 'SIGNAL_ERROR';
 
 export interface SignalBaseMessage {
@@ -67,6 +68,13 @@ export interface SignalCandidateMessage extends SignalBaseMessage {
   candidate: unknown; // RTCIceCandidateInit
 }
 
+export interface SignalRelayMessage extends SignalBaseMessage {
+  type: 'SIGNAL_RELAY';
+  fromPeerId: string;
+  toPeerId: string;
+  relayMessage: unknown;
+}
+
 export interface SignalErrorMessage extends SignalBaseMessage {
   type: 'SIGNAL_ERROR';
   error: string;
@@ -80,4 +88,5 @@ export type SignalingMessage =
   | SignalOfferMessage
   | SignalAnswerMessage
   | SignalCandidateMessage
+  | SignalRelayMessage
   | SignalErrorMessage;

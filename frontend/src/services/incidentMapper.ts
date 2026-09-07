@@ -116,6 +116,9 @@ export function incidentToViewModel(
     latitude: incident.latitude,
     longitude: incident.longitude,
     statusText: capitalize(incident.status),
+    urgency: incident.priority === 'P0' ? 'High' : incident.priority === 'P1' ? 'Medium' : 'Low',
+    hopsRemaining: Math.max(0, 3 - (incident.hopCount || 0)),
+    peopleAffected: incident.peopleAffected,
     isVerified:
       incident.status === 'verified' ||
       incident.status === 'assigned' ||

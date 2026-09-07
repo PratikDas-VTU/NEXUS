@@ -19,6 +19,9 @@ export interface IncidentItem {
   telemetryTag?: string;
   isVerified?: boolean;
   statusText?: string;
+  urgency?: 'High' | 'Medium' | 'Low';
+  hopsRemaining?: number;
+  peopleAffected?: number;
   waterCapacity?: {
     availableGallons: string;
     flowRate: string;

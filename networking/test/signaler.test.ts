@@ -50,35 +50,91 @@ async function runSignalerTest() {
     }).on('error', reject);
   });
 
-  // Test WebSocket connection using Node's global WebSocket (Node 22+)
+  // Test WebSocket multi-peer signaling & routing using Node's global WebSocket (Node 22+)
   if (typeof (globalThis as any).WebSocket !== 'undefined') {
-    const ws = new (globalThis as any).WebSocket(`ws://127.0.0.1:${TEST_PORT}`);
+    const ws1 = new (globalThis as any).WebSocket(`ws://127.0.0.1:${TEST_PORT}`);
+    const ws2 = new (globalThis as any).WebSocket(`ws://127.0.0.1:${TEST_PORT}`);
 
     await new Promise<void>((resolve, reject) => {
-      ws.onopen = () => {
-        // Send join
-        ws.send(
+      let peer1Joined = false;
+      let peer2GotPeer1 = false;
+      let offerReceivedByPeer1 = false;
+      let relayReceivedByPeer2 = false;
+
+      ws1.onopen = () => {
+        ws1.send(
           JSON.stringify({
             type: 'SIGNAL_JOIN',
-            peerId: 'test-peer-1',
-            deviceId: 'DEV-TEST-1',
+            peerId: 'peer-1',
+            deviceId: 'DEV-PEER-1',
             timestamp: Date.now(),
           })
         );
       };
 
-      ws.onmessage = (event: MessageEvent) => {
+      ws1.onmessage = (event: MessageEvent) => {
         const data = JSON.parse(event.data.toString());
         if (data.type === 'SIGNAL_PEERS') {
-          assert.ok(Array.isArray(data.peers), 'Should receive peers list');
-          ws.close();
-          console.log('  ✔ Passed: WebSocket handshake and SIGNAL_JOIN acknowledged.');
+          peer1Joined = true;
+          // Connect peer 2 once peer 1 is joined
+          ws2.send(
+            JSON.stringify({
+              type: 'SIGNAL_JOIN',
+              peerId: 'peer-2',
+              deviceId: 'DEV-PEER-2',
+              timestamp: Date.now(),
+            })
+          );
+        } else if (data.type === 'SIGNAL_OFFER') {
+          assert.strictEqual(data.fromPeerId, 'peer-2');
+          offerReceivedByPeer1 = true;
+          // Peer 1 sends a fallback relay message to peer 2
+          ws1.send(
+            JSON.stringify({
+              type: 'SIGNAL_RELAY',
+              toPeerId: 'peer-2',
+              relayMessage: { type: 'HELLO', senderDeviceId: 'DEV-PEER-1', sessionId: 'ses-1' },
+              timestamp: Date.now(),
+            })
+          );
+        }
+      };
+
+      ws2.onopen = () => {
+        // Wait for peer 1 to finish join before peer 2 joins
+      };
+
+      ws2.onmessage = (event: MessageEvent) => {
+        const data = JSON.parse(event.data.toString());
+        if (data.type === 'SIGNAL_PEERS') {
+          assert.ok(Array.isArray(data.peers), 'Peer 2 should receive peers list');
+          assert.ok(data.peers.some((p: any) => p.peerId === 'peer-1'), 'Peer 2 should see peer-1');
+          peer2GotPeer1 = true;
+          // Peer 2 sends an offer to Peer 1
+          ws2.send(
+            JSON.stringify({
+              type: 'SIGNAL_OFFER',
+              fromPeerId: 'peer-2',
+              toPeerId: 'peer-1',
+              sdp: { type: 'offer', sdp: 'v=0\r\no=mock 123 456 IN IP4 mock.local\r\n' },
+              timestamp: Date.now(),
+            })
+          );
+        } else if (data.type === 'SIGNAL_RELAY') {
+          assert.strictEqual(data.fromPeerId, 'peer-1');
+          assert.strictEqual(data.relayMessage?.type, 'HELLO');
+          relayReceivedByPeer2 = true;
+
+          ws1.close();
+          ws2.close();
+          console.log('  ✔ Passed: Multi-peer discovery, OFFER forwarding, and SIGNAL_RELAY verified.');
           resolve();
         }
       };
 
-      ws.onerror = reject;
-      setTimeout(() => reject(new Error('WebSocket signaling timeout')), 3000);
+      ws1.onerror = reject;
+      ws2.onerror = reject;
+      setTimeout(() => reject(new Error('Multi-peer signaling test timeout')), 4000);
     });
   }
 

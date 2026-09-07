@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { MeshPeer } from '../types';
 import { meshPeers } from '../data/mockData';
 import type { RelayNetworkStatus } from '../../../shared/interfaces';
+import { useNexusServices } from '../context/ServiceContext';
 
 interface NetworkTabProps {
   onShowToast: (msg: string) => void;
@@ -14,19 +15,41 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
   onShowToast,
   isInternetConnected = false,
   onToggleInternet,
-  networkStatus,
+  networkStatus: propNetworkStatus,
 }) => {
+  const {
+    networkStatus: ctxNetworkStatus,
+    networkDiagnostics,
+    reconnectSignaler,
+    deviceId,
+  } = useNexusServices();
+
+  const networkStatus = propNetworkStatus || ctxNetworkStatus;
   const [peers] = useState<MeshPeer[]>(meshPeers);
   const [isAutoScanning, setIsAutoScanning] = useState<boolean>(true);
   const [backgroundDiscovery, setBackgroundDiscovery] = useState<boolean>(true);
   const [highlightedPeerId, setHighlightedPeerId] = useState<string | null>(null);
+  const [showLiveConsole, setShowLiveConsole] = useState<boolean>(true);
+  const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
 
   const realPeerCount = networkStatus?.activePeers?.length ?? 0;
+  const isSignalingConnected = networkDiagnostics.signalingState === 'CONNECTED';
 
   const handleToggleAutoScan = () => {
     const next = !isAutoScanning;
     setIsAutoScanning(next);
     onShowToast(next ? 'Mesh radio scanning enabled' : 'Mesh radio scanning paused');
+  };
+
+  const handleManualReconnect = async () => {
+    setIsReconnecting(true);
+    onShowToast('Reconnecting to local LAN signaling server...');
+    try {
+      await reconnectSignaler();
+      setTimeout(() => setIsReconnecting(false), 800);
+    } catch {
+      setIsReconnecting(false);
+    }
   };
 
   const handleSelectPeer = (peer: MeshPeer) => {
@@ -91,12 +114,243 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
         </button>
       </div>
 
-      {/* Kinetic Radar Visualization */}
+      {/* ─── REAL RUNTIME MESH DIAGNOSTICS HERO CARD ──────────────────────────── */}
+      <div className="p-4 rounded-3xl bg-[#181818] border border-[#2e2e2e] shadow-xl flex flex-col gap-3.5 shrink-0">
+        <div className="flex items-center justify-between border-b border-[#262626] pb-3">
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-[20px] text-[#3e90ff]">
+              wifi_tethering
+            </span>
+            <span className="text-[14px] font-bold text-[#e5e2e1] tracking-tight">
+              Local Hardware Radio & Signaling
+            </span>
+          </div>
+          <span
+            className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1.5 ${
+              isSignalingConnected
+                ? 'bg-[#142e1d] text-[#47e266] border border-[#2f6f3a]'
+                : networkDiagnostics.signalingState === 'CONNECTING'
+                ? 'bg-[#1b253b] text-[#aac7ff] border border-[#2d4370]'
+                : 'bg-[#331818] text-[#ffb4ab] border border-[#6b2c2c]'
+            }`}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                isSignalingConnected
+                  ? 'bg-[#47e266] animate-pulse'
+                  : networkDiagnostics.signalingState === 'CONNECTING'
+                  ? 'bg-[#aac7ff] animate-ping'
+                  : 'bg-[#ffb4ab]'
+              }`}
+            />
+            {networkDiagnostics.signalingState}
+          </span>
+        </div>
+
+        {/* Signaling Server URL & Device Node ID Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+          <div className="p-2.5 rounded-2xl bg-[#121212] border border-[#262626] flex flex-col gap-1">
+            <span className="text-[10px] text-[#8b91a0] uppercase font-semibold tracking-wider">
+              Local Signaler Endpoint
+            </span>
+            <div className="flex items-center justify-between gap-1">
+              <span className="font-mono text-[11px] text-[#aac7ff] truncate">
+                {networkDiagnostics.signalingUrl}
+              </span>
+              <button
+                onClick={handleManualReconnect}
+                disabled={isReconnecting}
+                className="p-1 rounded-md bg-[#222] hover:bg-[#333] text-[#c0c6d6] cursor-pointer"
+                title="Reconnect Signaling"
+              >
+                <span className={`material-symbols-outlined text-[14px] ${isReconnecting ? 'animate-spin' : ''}`}>
+                  refresh
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="p-2.5 rounded-2xl bg-[#121212] border border-[#262626] flex flex-col gap-1">
+            <span className="text-[10px] text-[#8b91a0] uppercase font-semibold tracking-wider">
+              Your Local Node Identity
+            </span>
+            <div className="flex items-center justify-between gap-1">
+              <span className="font-mono text-[11px] text-[#e5e2e1] font-bold truncate">
+                {deviceId}
+              </span>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(deviceId);
+                  onShowToast('Device ID copied to clipboard');
+                }}
+                className="p-1 rounded-md bg-[#222] hover:bg-[#333] text-[#c0c6d6] cursor-pointer"
+                title="Copy Device ID"
+              >
+                <span className="material-symbols-outlined text-[14px]">content_copy</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Discovered / Connected Real Peers on LAN */}
+        <div className="flex flex-col gap-2 pt-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold text-[#8b91a0] uppercase tracking-wider">
+              Real LAN Peers ({networkDiagnostics.discoveredPeers.length} Discovered · {realPeerCount} Active Transport)
+            </span>
+          </div>
+
+          {networkDiagnostics.discoveredPeers.length === 0 ? (
+            <div className="p-3 rounded-2xl bg-[#121212] border border-[#262626] text-center flex flex-col items-center justify-center py-4">
+              <span className="material-symbols-outlined text-[20px] text-[#8b91a0] mb-1">
+                radar
+              </span>
+              <span className="text-[12px] text-[#c0c6d6] font-medium">
+                Searching local Wi-Fi for companion nodes...
+              </span>
+              <span className="text-[10px] text-[#8b91a0] mt-0.5">
+                Open <span className="font-mono text-[#aac7ff]">http://&lt;your-ip&gt;:3000</span> on another phone on this Wi-Fi
+              </span>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {networkDiagnostics.discoveredPeers.map((peer) => {
+                const diag = networkDiagnostics.peerDiagnostics.find((p) => p.peerId === peer.peerId);
+                const isRtcConnected = diag?.connectionState === 'connected';
+                const isDataChannelOpen = diag?.dataChannelState === 'open';
+                const hasActiveTransport = diag?.transportType && diag.transportType !== 'none';
+
+                return (
+                  <div
+                    key={peer.peerId}
+                    className="p-3 rounded-2xl bg-[#121212] border border-[#2a2a2a] flex flex-col gap-2"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            hasActiveTransport ? 'bg-[#47e266] animate-pulse' : 'bg-[#aac7ff]'
+                          }`}
+                        />
+                        <span className="font-mono text-[12px] font-bold text-[#e5e2e1]">
+                          {peer.peerId.length > 18 ? `${peer.peerId.slice(0, 16)}...` : peer.peerId}
+                        </span>
+                      </div>
+                      <span
+                        className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                          diag?.transportType === 'webrtc'
+                            ? 'bg-[#47e266]/15 text-[#47e266]'
+                            : diag?.transportType === 'websocket'
+                            ? 'bg-[#3e90ff]/15 text-[#aac7ff]'
+                            : 'bg-[#2a2a2a] text-[#8b91a0]'
+                        }`}
+                      >
+                        {diag?.transportType === 'webrtc'
+                          ? 'WebRTC P2P'
+                          : diag?.transportType === 'websocket'
+                          ? 'Hotspot Mesh'
+                          : 'Connecting...'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono pt-1 border-t border-[#1c1c1c]">
+                      <div className="flex flex-col">
+                        <span className="text-[#8b91a0]">WebRTC</span>
+                        <span
+                          className={`font-semibold ${
+                            isRtcConnected
+                              ? 'text-[#47e266]'
+                              : diag?.connectionState === 'connecting'
+                              ? 'text-[#aac7ff]'
+                              : diag?.connectionState === 'failed'
+                              ? 'text-[#ffb4ab]'
+                              : 'text-[#8b91a0]'
+                          }`}
+                        >
+                          {diag?.connectionState || 'new'}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-col">
+                        <span className="text-[#8b91a0]">Channel</span>
+                        <span
+                          className={`font-semibold ${
+                            isDataChannelOpen
+                              ? 'text-[#47e266]'
+                              : diag?.dataChannelState === 'connecting'
+                              ? 'text-[#ffb84e]'
+                              : 'text-[#8b91a0]'
+                          }`}
+                        >
+                          {diag?.dataChannelState || 'none'}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-col">
+                        <span className="text-[#8b91a0]">Relay Status</span>
+                        <span className={hasActiveTransport ? 'text-[#47e266] font-semibold' : 'text-[#8b91a0]'}>
+                          {hasActiveTransport ? 'RELAYING' : 'PENDING'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Live Diagnostics Console Toggle & Log Display */}
+        <div className="flex flex-col gap-1.5 pt-1 border-t border-[#262626]">
+          <button
+            onClick={() => setShowLiveConsole(!showLiveConsole)}
+            className="flex items-center justify-between text-[11px] text-[#aac7ff] font-semibold hover:text-[#fff] cursor-pointer py-1"
+          >
+            <span className="flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-[15px]">terminal</span>
+              <span>Live Mesh Event Log ({networkDiagnostics.recentLogs.length})</span>
+            </span>
+            <span className="material-symbols-outlined text-[16px]">
+              {showLiveConsole ? 'expand_less' : 'expand_more'}
+            </span>
+          </button>
+
+          {showLiveConsole && (
+            <div className="max-h-36 overflow-y-auto no-scrollbar rounded-xl bg-[#0d0d0d] p-2.5 font-mono text-[10px] flex flex-col gap-1 border border-[#222]">
+              {networkDiagnostics.recentLogs.length === 0 ? (
+                <span className="text-[#666]">Listening for mesh network events...</span>
+              ) : (
+                networkDiagnostics.recentLogs.slice(0, 15).map((log) => (
+                  <div key={log.id} className="flex items-start gap-1.5 leading-tight">
+                    <span className="text-[#555] shrink-0">
+                      {new Date(log.timestamp).toLocaleTimeString().slice(3)}
+                    </span>
+                    <span
+                      className={`shrink-0 font-bold ${
+                        log.level === 'error'
+                          ? 'text-[#ffb4ab]'
+                          : log.level === 'warn'
+                          ? 'text-[#ffb84e]'
+                          : 'text-[#47e266]'
+                      }`}
+                    >
+                      [{log.level.toUpperCase()}]
+                    </span>
+                    <span className="text-[#c0c6d6] break-all">{log.message}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ─── KINETIC RADAR VISUALIZATION (DEMO REFERENCE) ────────────────────── */}
       <div className="relative w-full aspect-square max-w-[320px] min-h-[250px] mx-auto rounded-3xl bg-[#1c1b1b] border border-[#2a2a2a] p-4 flex items-center justify-center overflow-hidden shadow-2xl shrink-0">
         {/* Honest Simulation Label Badge */}
         <div className="absolute top-2.5 inset-x-3 flex justify-center pointer-events-none z-20">
           <span className="px-2.5 py-0.5 rounded-full bg-[#131313]/90 border border-[#2a2a2a] text-[10px] font-medium text-[#8b91a0]">
-            Mesh topology visualization (Simulated)
+            Mesh topology visualization (Simulated Reference)
           </span>
         </div>
 
@@ -209,65 +463,6 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
           <span className="text-[#8b91a0]">·</span>
           <span>Store-Carry-Forward Engine Active</span>
         </div>
-      </div>
-
-      {/* Real Connected WebRTC Peers Section */}
-      <div className="flex flex-col gap-2 shrink-0">
-        <div className="flex items-center justify-between px-1">
-          <h2 className="text-[15px] font-semibold text-[#e5e2e1] tracking-tight">
-            Connected Mesh Peers (Live WebRTC)
-          </h2>
-          <span className="text-[11px] font-mono text-[#aac7ff]">
-            {realPeerCount} Active
-          </span>
-        </div>
-
-        {realPeerCount > 0 ? (
-          <div className="flex flex-col gap-2">
-            {networkStatus?.activePeers.map((peer, idx) => {
-              const peerId = typeof peer === 'string' ? peer : peer.peerId || peer.deviceId || `peer-${idx}`;
-              const peerNodeId = typeof peer === 'object' && peer?.deviceId ? peer.deviceId : undefined;
-              const transport = typeof peer === 'object' && peer?.transportType ? peer.transportType : 'webrtc';
-
-              return (
-                <div
-                  key={peerId}
-                  className="p-3.5 rounded-2xl bg-[#1c1b1b] border border-[#3e90ff]/40 flex items-center justify-between shadow-sm"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-[#3e90ff]/20 text-[#aac7ff] flex items-center justify-center border border-[#3e90ff]/40">
-                      <span className="material-symbols-outlined text-[20px]">cell_tower</span>
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-[13px] font-bold text-[#e5e2e1] font-mono">
-                        {peerId.length > 20 ? `${peerId.slice(0, 18)}...` : peerId}
-                      </span>
-                      <span className="text-[11px] text-[#47e266] flex items-center gap-1 mt-0.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-[#47e266]" />
-                        {peerNodeId ? `Node ${peerNodeId} · ` : ''}{transport.toUpperCase()} DataChannel · Relaying
-                      </span>
-                    </div>
-                  </div>
-                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#47e266]/15 text-[#47e266]">
-                    Online
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="p-4 rounded-2xl bg-[#1c1b1b] border border-[#2a2a2a] text-center flex flex-col items-center justify-center py-5">
-            <span className="material-symbols-outlined text-[24px] text-[#8b91a0] mb-1.5">
-              wifi_tethering_off
-            </span>
-            <span className="text-[13px] font-medium text-[#c0c6d6]">
-              No active WebRTC peer connections
-            </span>
-            <span className="text-[11px] text-[#8b91a0] mt-1 max-w-[280px]">
-              Open <span className="text-[#aac7ff] font-mono">?node=B</span> in another browser window or connect on LAN to form mesh
-            </span>
-          </div>
-        )}
       </div>
 
       {/* Simulated Mesh Nodes (Demo Topology) */}

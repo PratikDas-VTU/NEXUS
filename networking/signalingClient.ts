@@ -13,6 +13,7 @@ import type {
   SignalCandidateMessage,
   SignalingMessage,
   SignalOfferMessage,
+  SignalRelayMessage,
 } from './types.ts';
 
 export interface SignalingClientOptions {
@@ -28,6 +29,7 @@ export type PeerLeftHandler = (peerId: string) => void;
 export type OfferHandler = (fromPeerId: string, sdp: unknown) => void;
 export type AnswerHandler = (fromPeerId: string, sdp: unknown) => void;
 export type CandidateHandler = (fromPeerId: string, candidate: unknown) => void;
+export type RelayMessageHandler = (fromPeerId: string, relayMessage: unknown) => void;
 export type ConnectionStateChangeHandler = (connected: boolean) => void;
 
 export class SignalingClient {
@@ -43,6 +45,7 @@ export class SignalingClient {
   public onOffer?: OfferHandler;
   public onAnswer?: AnswerHandler;
   public onCandidate?: CandidateHandler;
+  public onRelayMessage?: RelayMessageHandler;
   public onStateChange?: ConnectionStateChangeHandler;
 
   constructor(options: SignalingClientOptions) {
@@ -157,6 +160,17 @@ export class SignalingClient {
     this.sendRaw(msg);
   }
 
+  public sendRelay(toPeerId: string, relayMessage: unknown): void {
+    const msg: SignalRelayMessage = {
+      type: 'SIGNAL_RELAY',
+      fromPeerId: this.options.peerId,
+      toPeerId,
+      relayMessage,
+      timestamp: Date.now(),
+    };
+    this.sendRaw(msg);
+  }
+
   private sendRaw(msg: SignalingMessage): void {
     if (this.isConnected() && this.socket) {
       this.socket.send(JSON.stringify(msg));
@@ -184,6 +198,9 @@ export class SignalingClient {
         break;
       case 'SIGNAL_CANDIDATE':
         this.onCandidate?.(msg.fromPeerId, msg.candidate);
+        break;
+      case 'SIGNAL_RELAY':
+        this.onRelayMessage?.(msg.fromPeerId, msg.relayMessage);
         break;
       case 'SIGNAL_ERROR':
         console.error('[SignalingClient] Server error message:', msg.error);

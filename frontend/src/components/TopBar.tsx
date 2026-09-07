@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { NavTab } from '../types';
 import { NEXUS_BRAND_LOGOS } from '../data/mockData';
+import { GeolocationCoordinates, LocationState } from '../services/api/geolocation';
+import { LocationDetailsModal } from './LocationDetailsModal';
 
 interface TopBarProps {
   activeTab: NavTab;
@@ -8,6 +10,11 @@ interface TopBarProps {
   peerCount?: number;
   isInternetConnected?: boolean;
   onToggleInternet?: () => void;
+  location?: GeolocationCoordinates | null;
+  locationState?: LocationState;
+  locationError?: string | null;
+  onRefreshGps?: () => Promise<any>;
+  onSetManualLocation?: (lat: number, lng: number) => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -16,8 +23,14 @@ export const TopBar: React.FC<TopBarProps> = ({
   peerCount = 4,
   isInternetConnected = false,
   onToggleInternet,
+  location = null,
+  locationState = 'IDLE',
+  locationError = null,
+  onRefreshGps,
+  onSetManualLocation,
 }) => {
   const [showMeshDiagnostics, setShowMeshDiagnostics] = useState(false);
+  const [showLocationDetails, setShowLocationDetails] = useState(false);
 
   const getTabSubtitle = () => {
     switch (activeTab) {
@@ -33,7 +46,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   return (
     <>
       <header className="sticky top-0 w-full z-40 shrink-0 bg-[#131313]/95 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.3)] border-b border-[#201f1f]/80">
-        <div className="h-12 px-3 flex items-center justify-between">
+        <div className="h-12 px-3 flex items-center justify-between gap-1">
           {/* Brand logo & title */}
           <div
             className="flex items-center gap-1.5 cursor-pointer select-none shrink-0"
@@ -56,11 +69,52 @@ export const TopBar: React.FC<TopBarProps> = ({
 
           {/* Right status & controls */}
           <div className="flex items-center gap-1.5 shrink-0">
+            {/* Compact Tactical Location Status Indicator */}
+            <button
+              id="nexus-btn-location-indicator"
+              onClick={() => setShowLocationDetails(true)}
+              className={`flex items-center gap-1 px-2 py-1 rounded-full border text-[10px] font-mono transition-all cursor-pointer ${
+                locationState === 'LIVE'
+                  ? 'bg-[#122317] border-[#22572e] text-[#47e266] hover:border-[#388e3c]'
+                  : locationState === 'CACHED'
+                  ? 'bg-[#231e14] border-[#554019] text-[#ffb84e] hover:border-[#7d5e23]'
+                  : locationState === 'MANUAL'
+                  ? 'bg-[#161c28] border-[#2a3a54] text-[#aac7ff] hover:border-[#3e90ff]'
+                  : locationState === 'ACQUIRING'
+                  ? 'bg-[#182230] border-[#2b4162] text-[#3e90ff]'
+                  : 'bg-[#1c1b1b] border-[#2a2a2a] text-[#8b91a0] hover:border-[#353534]'
+              }`}
+              title="Tactical GPS Status · Click to view details / manual override"
+            >
+              <span className="text-[11px] leading-none shrink-0">
+                {locationState === 'LIVE'
+                  ? '📍'
+                  : locationState === 'CACHED'
+                  ? '📦'
+                  : locationState === 'MANUAL'
+                  ? '✎'
+                  : locationState === 'ACQUIRING'
+                  ? '🔄'
+                  : '⚠️'}
+              </span>
+              <span className="font-semibold truncate max-w-[82px] xs:max-w-[105px] sm:max-w-none">
+                {locationState === 'LIVE' && location
+                  ? `${location.latitude.toFixed(3)}, ${location.longitude.toFixed(3)}`
+                  : locationState === 'CACHED' && location
+                  ? `${location.latitude.toFixed(3)}, ${location.longitude.toFixed(3)}`
+                  : locationState === 'MANUAL' && location
+                  ? `${location.latitude.toFixed(3)}, ${location.longitude.toFixed(3)}`
+                  : locationState === 'ACQUIRING'
+                  ? 'Acquiring...'
+                  : 'No GPS'}
+              </span>
+            </button>
+
             {/* Consolidated Authoritative Connection Status */}
             <button
               id="nexus-btn-mesh-status"
               onClick={() => setShowMeshDiagnostics(true)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-medium transition-all cursor-pointer ${
+              className={`flex items-center gap-1.5 px-2 py-1 rounded-full border text-[11px] font-medium transition-all cursor-pointer ${
                 isInternetConnected
                   ? 'bg-[#152a1b] border-[#2f6f3a] text-[#47e266]'
                   : 'bg-[#1c1b1b] border-[#2a2a2a] text-[#e5e2e1] hover:border-[#353534]'
@@ -68,8 +122,8 @@ export const TopBar: React.FC<TopBarProps> = ({
               title="Connection status · Click for diagnostics"
             >
               <span className={`w-2 h-2 rounded-full ${isInternetConnected ? 'bg-[#47e266]' : 'bg-[#47e266] animate-pulse'}`} />
-              <span className="font-semibold">{isInternetConnected ? 'Online' : 'Offline'}</span>
-              <span className="text-[#8b91a0]">·</span>
+              <span className="font-semibold hidden xs:inline">{isInternetConnected ? 'Online' : 'Offline'}</span>
+              <span className="text-[#8b91a0] hidden xs:inline">·</span>
               <span className="text-[#c0c6d6]">Mesh ({peerCount})</span>
             </button>
 
@@ -107,6 +161,17 @@ export const TopBar: React.FC<TopBarProps> = ({
           </div>
         </div>
       </header>
+
+      {/* Location Details Modal */}
+      <LocationDetailsModal
+        isOpen={showLocationDetails}
+        onClose={() => setShowLocationDetails(false)}
+        location={location}
+        locationState={locationState}
+        locationError={locationError}
+        onRefreshGps={onRefreshGps || (async () => {})}
+        onSetManualLocation={onSetManualLocation || (() => {})}
+      />
 
       {/* Mesh Diagnostics Dialog */}
       {showMeshDiagnostics && (
@@ -153,16 +218,16 @@ export const TopBar: React.FC<TopBarProps> = ({
                 </span>
               </div>
               <div className="flex items-center justify-between p-2 rounded-xl bg-[#131313]">
-                <span className="text-[#8b91a0]">Direct BLE Peers</span>
+                <span className="text-[#8b91a0]">Direct WebRTC Peers</span>
                 <span className="text-[#e5e2e1] font-semibold">{peerCount} nodes in range</span>
               </div>
               <div className="flex items-center justify-between p-2 rounded-xl bg-[#131313]">
                 <span className="text-[#8b91a0]">Multi-Hop Reach</span>
-                <span className="text-[#aac7ff] font-semibold">Up to 4 hops (3.2 km)</span>
+                <span className="text-[#aac7ff] font-semibold">Up to 3 hops (Store-Carry-Forward)</span>
               </div>
               <div className="flex items-center justify-between p-2 rounded-xl bg-[#131313]">
                 <span className="text-[#8b91a0]">Encryption Protocol</span>
-                <span className="text-[#e5e2e1] font-mono">AES-256-GCM Ephemeral</span>
+                <span className="text-[#e5e2e1] font-mono">WebRTC DTLS-SRTP</span>
               </div>
               <div className="flex items-center justify-between p-2 rounded-xl bg-[#131313]">
                 <span className="text-[#8b91a0]">Mesh Duty Cycle</span>

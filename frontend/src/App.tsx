@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { NavTab } from './types';
 import { MobileFrame } from './components/MobileFrame';
 import { TopBar } from './components/TopBar';
@@ -8,6 +8,7 @@ import { MapTab } from './components/MapTab';
 import { NetworkTab } from './components/NetworkTab';
 import { DeviceTab } from './components/DeviceTab';
 import { StitchDataModal } from './components/StitchDataModal';
+import { LocationPromptModal } from './components/LocationPromptModal';
 import { ServiceProvider, useNexusServices } from './context/ServiceContext';
 import type { IncidentType, IncidentPriority } from '../../shared/types';
 
@@ -25,7 +26,34 @@ function AppContent() {
     deviceId,
     networkStatus,
     toggleInternet,
+    currentLocation,
+    locationState,
+    locationError,
+    requestLocation,
+    setManualLocation,
   } = useNexusServices();
+
+  // First-launch location explanation prompt
+  const [showLocationPrompt, setShowLocationPrompt] = useState<boolean>(() => {
+    if (typeof localStorage !== 'undefined') {
+      return !localStorage.getItem('nexus_location_onboarded');
+    }
+    return false;
+  });
+
+  // Automatically attempt initial hardware GPS fix if previously onboarded
+  useEffect(() => {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('nexus_location_onboarded')) {
+      requestLocation(false).catch(() => {});
+    }
+  }, [requestLocation]);
+
+  const handleDismissLocationPrompt = () => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('nexus_location_onboarded', 'true');
+    }
+    setShowLocationPrompt(false);
+  };
 
   const triggerToast = (msg: string) => {
     setToastMessage(msg);
@@ -50,11 +78,13 @@ function AppContent() {
 
   const handleBroadcastEmergency = async () => {
     try {
+      const lat = currentLocation ? currentLocation.latitude : 12.9716;
+      const lng = currentLocation ? currentLocation.longitude : 77.5946;
       await createIncident({
         type: 'medical',
         priority: 'P0',
-        latitude: 12.9716,
-        longitude: 77.5946,
+        latitude: lat,
+        longitude: lng,
         peopleAffected: 1,
         description: 'Priority Distress Beacon\nCritical emergency assistance requested via NEXUS broadcast channel.',
       });
@@ -92,11 +122,14 @@ function AppContent() {
         priority = 'P2';
       }
 
+      const baseLat = currentLocation ? currentLocation.latitude : 12.972;
+      const baseLng = currentLocation ? currentLocation.longitude : 77.595;
+
       await createIncident({
         type,
         priority,
-        latitude: 12.972 + (Math.random() - 0.5) * 0.01,
-        longitude: 77.595 + (Math.random() - 0.5) * 0.01,
+        latitude: baseLat + (Math.random() - 0.5) * 0.01,
+        longitude: baseLng + (Math.random() - 0.5) * 0.01,
         peopleAffected: 2,
         description: `${data.title}\n${data.description}`,
       });
@@ -114,13 +147,18 @@ function AppContent() {
       isInternetConnected={isInternetConnected}
       onToggleInternet={handleToggleInternet}
     >
-      {/* Top Header */}
+      {/* Top Header with Compact Location Pill */}
       <TopBar
         activeTab={activeTab}
         onSelectTab={setActiveTab}
         isInternetConnected={isInternetConnected}
         onToggleInternet={handleToggleInternet}
         peerCount={networkStatus.activePeers.length}
+        location={currentLocation}
+        locationState={locationState}
+        locationError={locationError}
+        onRefreshGps={() => requestLocation(true)}
+        onSetManualLocation={setManualLocation}
       />
 
       {/* Main Tab Viewport */}
@@ -171,6 +209,28 @@ function AppContent() {
       <BottomNav
         activeTab={activeTab}
         onSelectTab={setActiveTab}
+      />
+
+      {/* First-Launch Location Onboarding & GPS Explanation Modal */}
+      <LocationPromptModal
+        isOpen={showLocationPrompt}
+        onClose={handleDismissLocationPrompt}
+        location={currentLocation}
+        locationState={locationState}
+        locationError={locationError}
+        onRequestLocation={async () => {
+          const res = await requestLocation(true);
+          if (res.success) {
+            if (typeof localStorage !== 'undefined') {
+              localStorage.setItem('nexus_location_onboarded', 'true');
+            }
+          }
+          return res;
+        }}
+        onSetManualLocation={(lat, lng) => {
+          setManualLocation(lat, lng);
+          handleDismissLocationPrompt();
+        }}
       />
 
       {/* Stitch Design System & Assets Modal */}
