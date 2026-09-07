@@ -57,9 +57,14 @@ This document details the external, browser, and network APIs integrated within 
 - **Status**: **ACTIVE & INTEGRATED**
 - **Purpose**: Minimalist, type-safe wrapper over IndexedDB providing reactive queries (`useLiveQuery` / `subscribeToIncidents`), compound indexing (`[status+priority]`), and atomic transactions for outbox deduplication.
 
-### 2. Leaflet / Tactical Map Visualizer
+### 2. Leaflet / Tactical Map Visualizer (`leaflet`)
 - **Status**: **ACTIVE & INTEGRATED**
-- **Purpose**: Renders offline map coordinates, emergency beacons, threat radii, and tactical vectors without requiring an external Google Maps API key or active internet connection.
+- **Location**: [`frontend/src/components/MapTab.tsx`](../../components/MapTab.tsx), configuration in [`config.ts`](./config.ts)
+- **Map Providers**:
+  - **Dark Tactical (Default)**: **Esri World Dark Gray Canvas** (`https://server.arcgisonline.com/...`) — 100% Free, NO API KEY REQUIRED, NO WATERMARK.
+  - **Street Map (Layer toggle)**: **OpenStreetMap Standard** (`https://tile.openstreetmap.org/...`) — 100% Free, NO API KEY REQUIRED, NO WATERMARK.
+  - **Custom CARTO (Optional)**: If user provides `VITE_CARTO_API_KEY` in `.env`, the app can load Carto Dark Matter directly without watermark. Free key signup: [carto.com/basemaps/apikey](https://carto.com/basemaps/apikey).
+- **Purpose**: Renders offline map coordinates, emergency beacons, threat radii, and real-time GPS positioning without requiring an external Google Maps API key or commercial subscription.
 
 ---
 

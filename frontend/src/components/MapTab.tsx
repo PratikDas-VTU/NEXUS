@@ -3,6 +3,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { MapBeacon, IncidentItem } from '../types';
 import { getCurrentPosition } from '../services/api/geolocation';
+import { getMapTileConfig } from '../services/api/config';
 
 interface MapTabProps {
   onShowToast: (msg: string) => void;
@@ -90,10 +91,12 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
       attributionControl: false,
     });
 
-    // Dark Matter tile layer (matches tactical theme, real global street map)
-    const darkTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      maxZoom: 19,
-      subdomains: 'abcd',
+    // Dark Tactical tile layer (Default: Esri Dark Canvas - 100% Free, Zero Key, Zero Watermark)
+    const initialConfig = getMapTileConfig('dark');
+    const darkTiles = L.tileLayer(initialConfig.url, {
+      maxZoom: initialConfig.maxZoom,
+      subdomains: (initialConfig.subdomains as any) || 'abc',
+      attribution: initialConfig.attribution,
     }).addTo(map);
 
     tileLayerRef.current = darkTiles;
@@ -131,15 +134,11 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
       map.removeLayer(tileLayerRef.current);
     }
 
-    const url = isSatelliteLayer
-      ? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
-      : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-
-    const subdomains = isSatelliteLayer ? 'abc' : 'abcd';
-
-    tileLayerRef.current = L.tileLayer(url, {
-      maxZoom: 19,
-      subdomains,
+    const config = getMapTileConfig(isSatelliteLayer ? 'street' : 'dark');
+    tileLayerRef.current = L.tileLayer(config.url, {
+      maxZoom: config.maxZoom,
+      subdomains: (config.subdomains as any) || 'abc',
+      attribution: config.attribution,
     }).addTo(map);
   }, [isSatelliteLayer]);
 
