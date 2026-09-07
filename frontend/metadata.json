@@ -1,0 +1,6 @@
+{
+  "name": "Nexus Mobile App",
+  "description": "Decentralized offline emergency mesh network and incident response frontend built with Google Stitch designs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
