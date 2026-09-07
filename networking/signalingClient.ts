@@ -47,6 +47,7 @@ export class SignalingClient {
   public onCandidate?: CandidateHandler;
   public onRelayMessage?: RelayMessageHandler;
   public onStateChange?: ConnectionStateChangeHandler;
+  public onPurgeAll?: (fromPeerId?: string, reason?: string) => void;
 
   constructor(options: SignalingClientOptions) {
     this.options = { autoReconnect: true, ...options };
@@ -171,6 +172,15 @@ export class SignalingClient {
     this.sendRaw(msg);
   }
 
+  public sendPurgeAll(reason?: string): void {
+    this.sendRaw({
+      type: 'SIGNAL_PURGE_ALL',
+      fromPeerId: this.options.peerId,
+      reason: reason || 'User requested complete network wipe',
+      timestamp: Date.now(),
+    });
+  }
+
   private sendRaw(msg: SignalingMessage): void {
     if (this.isConnected() && this.socket) {
       this.socket.send(JSON.stringify(msg));
@@ -201,6 +211,9 @@ export class SignalingClient {
         break;
       case 'SIGNAL_RELAY':
         this.onRelayMessage?.(msg.fromPeerId, msg.relayMessage);
+        break;
+      case 'SIGNAL_PURGE_ALL':
+        this.onPurgeAll?.(msg.fromPeerId, msg.reason);
         break;
       case 'SIGNAL_ERROR':
         console.error('[SignalingClient] Server error message:', msg.error);

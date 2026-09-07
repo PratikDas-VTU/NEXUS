@@ -84,13 +84,13 @@ export const IncidentManager: React.FC<IncidentManagerProps> = ({
           <button
             onClick={async () => {
               await purgeDemoData();
-              onShowToast('✓ All demo incidents purged. Offline vault reset.');
+              onShowToast('✓ Network-wide purge broadcast! All devices cleared.');
             }}
             className="px-3.5 py-2 rounded-xl bg-[#2b1616] hover:bg-[#3f1919] text-[#ffb4ab] font-bold text-xs flex items-center justify-center gap-1.5 border border-[#ffb4ab]/30 cursor-pointer transition-all active:scale-95 shadow-sm"
-            title="One-Click Purge Demo Incidents"
+            title="One-Click Wipe Demo Data (All Devices Everywhere)"
           >
             <span className="material-symbols-outlined text-[16px]">delete_sweep</span>
-            <span>Purge Data</span>
+            <span>Purge Everywhere</span>
           </button>
           <button
             onClick={() => setShowAddModal(true)}

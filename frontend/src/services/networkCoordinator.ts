@@ -66,12 +66,18 @@ export class NetworkCoordinator {
   private lastError: string | null = null;
   private logs: NetworkLogEntry[] = [];
   private diagnosticListeners = new Set<(d: NetworkDiagnostics) => void>();
+  private purgeListeners = new Set<(reason?: string) => void>();
 
   constructor(options: NetworkCoordinatorOptions) {
     this.deviceId = options.deviceId;
     this.relayEngine = options.relayEngine;
     this.signalingUrl = options.signalingUrl || 'ws://localhost:8080';
     this.log('info', `Coordinator initialized for device ${this.deviceId}`);
+
+    this.relayEngine.onPurge = (fromPeerId, reason) => {
+      this.log('warn', `Received PURGE over transport from ${fromPeerId}: ${reason || 'no reason'}`);
+      this.notifyPurgeAll(reason);
+    };
   }
 
   public updateDeviceId(newDeviceId: string): void {
@@ -162,6 +168,11 @@ export class NetworkCoordinator {
         }
         wsTransport.handleIncomingRelay(relayMsg);
         this.notifyDiagnostics();
+      };
+
+      this.signalingClient.onPurgeAll = (fromPeerId, reason) => {
+        this.log('warn', `Received SIGNAL_PURGE_ALL from ${fromPeerId || 'signaler'}: ${reason || 'no reason'}`);
+        this.notifyPurgeAll(reason);
       };
 
       await this.signalingClient.connect();
@@ -626,5 +637,39 @@ export class NetworkCoordinator {
       this.logs.pop();
     }
     this.notifyDiagnostics();
+  }
+
+  // ─── NETWORK-WIDE PURGE ORCHESTRATION ────────────────────────────────────
+
+  public broadcastPurgeAll(reason?: string): void {
+    this.log('warn', `Broadcasting network-wide PURGE to all peers and signaler: ${reason || 'User initiated'}`);
+    if (this.signalingClient && this.signalingClient.isConnected()) {
+      try {
+        this.signalingClient.sendPurgeAll(reason);
+      } catch (err: any) {
+        this.log('error', `Failed to send SIGNAL_PURGE_ALL via WebSocket: ${err?.message}`);
+      }
+    }
+    this.relayEngine.broadcastPurge(reason).catch((err: any) => {
+      this.log('error', `Failed to broadcast PURGE via peer transports: ${err?.message}`);
+    });
+  }
+
+  public onPurgeAll(callback: (reason?: string) => void): () => void {
+    this.purgeListeners.add(callback);
+    return () => {
+      this.purgeListeners.delete(callback);
+    };
+  }
+
+  private notifyPurgeAll(reason?: string): void {
+    this.log('warn', `Executing network purge callback for all registered listeners: ${reason || 'no reason'}`);
+    for (const listener of this.purgeListeners) {
+      try {
+        listener(reason);
+      } catch (err) {
+        console.error('[NetworkCoordinator] Error in purge listener:', err);
+      }
+    }
   }
 }

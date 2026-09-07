@@ -171,6 +171,21 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.url === '/purge') {
+    broadcast({
+      type: 'SIGNAL_PURGE_ALL',
+      fromPeerId: 'ADMIN_HTTP',
+      reason: 'Admin HTTP Purge triggered',
+      timestamp: Date.now(),
+    });
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(JSON.stringify({ status: 'ok', message: 'Global network purge broadcasted to all connected peers' }));
+    return;
+  }
+
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('NEXUS Local LAN Signaling Server is running. Connect via ws://<this-ip>:' + PORT);
 });
@@ -370,6 +385,17 @@ server.on('upgrade', (req, socket, head) => {
             timestamp: Date.now(),
           });
         }
+        break;
+      }
+
+      case 'SIGNAL_PURGE_ALL': {
+        console.log(`[Signaler] 🧹 GLOBAL DATA PURGE broadcast from ${currentPeerId} (all ${peers.size} peers)`);
+        broadcast({
+          type: 'SIGNAL_PURGE_ALL',
+          fromPeerId: currentPeerId,
+          reason: msg.reason || 'User requested complete data purge',
+          timestamp: Date.now(),
+        });
         break;
       }
 

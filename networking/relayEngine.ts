@@ -27,6 +27,7 @@ import type {
   HelloMessage,
   ManifestMessage,
   PayloadMessage,
+  PurgeMessage,
   RelayMessage,
   RequestMessage,
 } from '../shared/protocol.ts';
@@ -35,6 +36,7 @@ import {
   createHelloMessage,
   createManifestMessage,
   createPayloadMessage,
+  createPurgeMessage,
   createRequestMessage,
 } from '../shared/protocol.ts';
 
@@ -65,6 +67,7 @@ export class RelayEngine implements INetworkRelayService {
   private isSignalingOnline = false;
   private currentSignalingUrl?: string;
   private totalRelayedCounter = 0;
+  public onPurge?: (fromPeerId: string, reason?: string) => void;
 
   constructor(localDeviceId: DeviceId, storageAdapter: IOfflineStorageAdapter) {
     this.localDeviceId = localDeviceId;
@@ -155,6 +158,12 @@ export class RelayEngine implements INetworkRelayService {
         break;
       case 'ACK':
         await this.handleAck(session, msg);
+        break;
+      case 'PURGE':
+        console.log(`[RelayEngine] Received PURGE from ${peerId}: ${msg.reason || 'no reason'}`);
+        if (this.onPurge) {
+          this.onPurge(peerId, msg.reason);
+        }
         break;
       case 'FORWARD':
         console.log(`[RelayEngine] Received FORWARD announcement for ${msg.incidentId} from ${peerId}`);
@@ -385,6 +394,19 @@ export class RelayEngine implements INetworkRelayService {
     for (const session of this.activePeers.values()) {
       if (session.transport.isOpen()) {
         await this.sendLocalManifest(session);
+      }
+    }
+  }
+
+  public async broadcastPurge(reason?: string): Promise<void> {
+    const purgeMsg = createPurgeMessage(this.localDeviceId, reason);
+    for (const session of this.activePeers.values()) {
+      try {
+        if (session.transport.isOpen()) {
+          await session.transport.send(purgeMsg);
+        }
+      } catch (err) {
+        console.warn(`[RelayEngine] Failed to send PURGE to ${session.peerId}:`, err);
       }
     }
   }

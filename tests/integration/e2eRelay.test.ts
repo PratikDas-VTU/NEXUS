@@ -226,4 +226,63 @@ describe('STAGE 7: End-to-End Multi-Node Peer Relay & Reactive Data Core', () =>
       await dbC.delete();
     }
   });
+
+  it('verifies 1-click network-wide PURGE wipes data across all connected mesh nodes', async () => {
+    // 1. Create incidents on Node A and Node B
+    const incA = await serviceA.createIncident({
+      type: 'medical',
+      priority: 'P1',
+      latitude: 12.9716,
+      longitude: 77.5946,
+      peopleAffected: 2,
+      description: 'Demo medical emergency on Node A',
+    });
+
+    const incB = await serviceB.createIncident({
+      type: 'safety',
+      priority: 'P0',
+      latitude: 12.9717,
+      longitude: 77.5947,
+      peopleAffected: 5,
+      description: 'Demo safety hazard on Node B',
+    });
+
+    // 2. Connect and sync between Node A and Node B
+    engineA.registerTransport(transportA);
+    engineB.registerTransport(transportB);
+    await delay(100);
+
+    // Verify both nodes have synced all incidents
+    const listA = await serviceA.listIncidents();
+    const listB = await serviceB.listIncidents();
+    expect(listA.length).toBe(2);
+    expect(listB.length).toBe(2);
+
+    // 3. Setup remote purge handler on Node B
+    let nodeBPurgeReceived = false;
+    engineB.onPurge = async (fromPeerId, reason) => {
+      nodeBPurgeReceived = true;
+      await dbB.incidents.clear();
+      await dbB.outbox.clear();
+    };
+
+    // 4. Node A initiates 1-click network-wide purge
+    await dbA.incidents.clear();
+    await dbA.outbox.clear();
+    await engineA.broadcastPurge('Admin demo reset');
+    await delay(50);
+
+    // 5. Verify Node B received the PURGE and wiped its data
+    expect(nodeBPurgeReceived).toBe(true);
+    const purgedA = await serviceA.listIncidents();
+    const purgedB = await serviceB.listIncidents();
+    expect(purgedA.length).toBe(0);
+    expect(purgedB.length).toBe(0);
+
+    // 6. Verify Store-Carry-Forward does NOT re-relays phantom data
+    await engineA.triggerPeerSync();
+    await delay(50);
+    expect((await serviceA.listIncidents()).length).toBe(0);
+    expect((await serviceB.listIncidents()).length).toBe(0);
+  });
 });

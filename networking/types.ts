@@ -80,6 +80,12 @@ export interface SignalErrorMessage extends SignalBaseMessage {
   error: string;
 }
 
+export interface SignalPurgeAllMessage extends SignalBaseMessage {
+  type: 'SIGNAL_PURGE_ALL';
+  fromPeerId?: string;
+  reason?: string;
+}
+
 export type SignalingMessage =
   | SignalJoinMessage
   | SignalPeersMessage
@@ -89,4 +95,5 @@ export type SignalingMessage =
   | SignalAnswerMessage
   | SignalCandidateMessage
   | SignalRelayMessage
-  | SignalErrorMessage;
+  | SignalErrorMessage
+  | SignalPurgeAllMessage;

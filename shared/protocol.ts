@@ -16,7 +16,8 @@ export type ProtocolMessageType =
   | 'REQUEST'
   | 'PAYLOAD'
   | 'ACK'
-  | 'FORWARD';
+  | 'FORWARD'
+  | 'PURGE';
 
 export type ProtocolErrorCode =
   | 'MALFORMED_ENVELOPE'
@@ -102,6 +103,13 @@ export interface ForwardMessage extends BaseRelayMessage {
   hopCount: number;
 }
 
+/** Global Network Purge Message: Wipes demo/test incidents across entire mesh */
+export interface PurgeMessage extends BaseRelayMessage {
+  type: 'PURGE';
+  reason?: string;
+  purgeTimestamp: number;
+}
+
 /** Discriminated union of all possible wire messages */
 export type RelayMessage =
   | HelloMessage
@@ -110,7 +118,8 @@ export type RelayMessage =
   | RequestMessage
   | PayloadMessage
   | AckMessage
-  | ForwardMessage;
+  | ForwardMessage
+  | PurgeMessage;
 
 // ─── HELPER FACTORY FUNCTIONS ────────────────────────────────────────────────
 
@@ -219,6 +228,21 @@ export function createAckMessage(
   };
 }
 
+export function createPurgeMessage(
+  senderDeviceId: DeviceId,
+  reason?: string
+): PurgeMessage {
+  return {
+    type: 'PURGE',
+    messageId: generateMessageId(),
+    senderDeviceId,
+    timestamp: Date.now(),
+    purgeTimestamp: Date.now(),
+    protocolVersion: PROTOCOL_VERSION,
+    reason: reason || 'Complete demo data purge requested by user',
+  };
+}
+
 /**
  * Type guard for RelayMessage
  */
@@ -233,6 +257,7 @@ export function isRelayMessage(msg: unknown): msg is RelayMessage {
     candidate.type === 'REQUEST' ||
     candidate.type === 'PAYLOAD' ||
     candidate.type === 'ACK' ||
-    candidate.type === 'FORWARD'
+    candidate.type === 'FORWARD' ||
+    candidate.type === 'PURGE'
   );
 }

@@ -309,17 +309,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <span className="material-symbols-outlined text-[18px]">refresh</span>
             </button>
 
-            {/* One-Click Purge Demo Data */}
+            {/* One-Click Network-Wide Purge Demo Data */}
             <button
               onClick={async () => {
                 await purgeDemoData();
-                onShowToast('✓ All demo incidents purged. Offline vault reset.');
+                onShowToast('✓ Network-wide purge broadcast! All devices cleared.');
               }}
               className="px-2.5 py-1.5 rounded-xl bg-[#2b1616] hover:bg-[#3f1919] border border-[#ffb4ab]/30 text-[#ffb4ab] text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
-              title="One-Click Purge Demo Data"
+              title="One-Click Wipe Demo Data (All Devices Everywhere)"
             >
               <span className="material-symbols-outlined text-[16px]">delete_sweep</span>
-              <span className="hidden sm:inline">Purge Demo Data</span>
+              <span className="hidden sm:inline">Purge Everywhere</span>
             </button>
 
             {/* User Profile & Logout */}
@@ -981,11 +981,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <button
                       onClick={async () => {
                         await purgeDemoData();
-                        onShowToast('✓ All demo incidents purged. Offline vault reset.');
+                        onShowToast('✓ Network-wide purge broadcast! All devices cleared.');
                       }}
                       className="px-3 py-1.5 rounded-xl bg-[#2b1616] hover:bg-[#3f1919] border border-[#ffb4ab]/40 text-xs font-semibold text-[#ffb4ab] cursor-pointer"
                     >
-                      Purge Demo Data
+                      Purge Everywhere
                     </button>
                   </div>
                 </div>

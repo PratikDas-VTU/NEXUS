@@ -43,7 +43,7 @@ interface ServiceContextValue {
   updateIncidentStatus: (id: string, newStatus: IncidentStatus) => Promise<void>;
   refreshIncidents: () => Promise<void>;
   refreshOutboxCount: () => Promise<void>;
-  purgeDemoData: () => Promise<void>;
+  purgeDemoData: (broadcast?: boolean) => Promise<void>;
   toggleInternet: (enable: boolean) => Promise<void>;
 
   // Location Core
@@ -161,18 +161,32 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   }, [incidentService]);
 
-  const purgeDemoData = useCallback(async () => {
+  const purgeDemoData = useCallback(async (broadcast = true) => {
     try {
+      if (broadcast) {
+        console.log('[ServiceProvider] Triggering network-wide purge broadcast across mesh & signaling');
+        coordinator.broadcastPurgeAll('User initiated network-wide demo data purge');
+      }
       await database.incidents.clear();
       await database.outbox.clear();
       setRawIncidents([]);
       setIncidents([]);
       setOutboxCount(0);
       storageAdapter.notifyStorageChange();
+      console.log('[ServiceProvider] Local database purged successfully');
     } catch (e) {
       console.error('[ServiceProvider] Failed to purge demo data:', e);
     }
-  }, [database, storageAdapter]);
+  }, [database, storageAdapter, coordinator]);
+
+  // Listen for remote network-wide purge commands across WebSockets & WebRTC
+  useEffect(() => {
+    const unsub = coordinator.onPurgeAll((reason) => {
+      console.warn('[ServiceProvider] Remote network purge received:', reason);
+      purgeDemoData(false);
+    });
+    return unsub;
+  }, [coordinator, purgeDemoData]);
 
   // Subscribe to network status & trigger immediate incident refresh on peer relay sync
   useEffect(() => {
