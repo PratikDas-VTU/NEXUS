@@ -1,0 +1,22 @@
+{
+  "name": "nexus",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "NEXUS — Offline-First Emergency & Community Network",
+  "scripts": {
+    "signaler": "node networking/signaler.js",
+    "test:relay": "node --experimental-strip-types networking/test/relay.test.ts",
+    "test:signaler": "node --experimental-strip-types networking/test/signaler.test.ts",
+    "test": "node --experimental-strip-types networking/test/relay.test.ts && node --experimental-strip-types networking/test/signaler.test.ts"
+  },
+  "keywords": [
+    "offline-first",
+    "emergency-response",
+    "webrtc",
+    "mesh",
+    "store-carry-forward"
+  ],
+  "author": "NEXUS Team",
+  "license": "MIT"
+}

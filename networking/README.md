@@ -37,7 +37,33 @@ During the ANVESHAN'26 event, this folder will contain the core communication en
 
 ---
 
-## Pre-Event Status
-> [!IMPORTANT]
-> **No WebRTC, signaling, or networking implementation code is present in this directory.**
-> Transport adapters, signaling scripts, and relay state machines will be developed strictly during the hackathon following the team lead's instruction to start coding.
+## Implemented Networking Modules
+* **[`signaler.js`](./signaler.js)**:
+  * Zero-dependency Node.js local LAN / Hotspot WebSocket signaling server.
+  * Start with: `node networking/signaler.js` or `npm run signaler`.
+  * Exposes HTTP health check at `http://localhost:8080/status`.
+* **[`signalingClient.ts`](./signalingClient.ts)**:
+  * Browser & Node compatible WebSocket client for local peer discovery, SDP offer/answer, and ICE exchange.
+* **[`webRtcTransport.ts`](./webRtcTransport.ts)**:
+  * Implements `ITransport` over `RTCPeerConnection` & `RTCDataChannel` (`nexus-relay`).
+* **[`wsTransport.ts`](./wsTransport.ts)**:
+  * Implements `ITransport` over local LAN WebSocket (Hour-9 Decision Gate Fallback).
+* **[`relayEngine.ts`](./relayEngine.ts)**:
+  * Store-Carry-Forward relay state machine (`HELLO` -> `MANIFEST` -> `REQUEST` -> `PAYLOAD` -> `ACK`).
+  * Enforces hop limit (`MAX_HOPS = 3`), store-before-forward, and TTL rules.
+* **[`mockStorageAdapter.ts`](./mockStorageAdapter.ts)**:
+  * In-memory storage adapter for testing networking without IndexedDB.
+* **[`test/relay.test.ts`](./test/relay.test.ts)**:
+  * Automated test suite covering A -> B relay, A -> B -> C multi-hop, deduplication, and hop budget.
+* **[`test/signaler.test.ts`](./test/signaler.test.ts)**:
+  * Automated integration test for `signaler.js`.
+* **[`index.ts`](./index.ts)**: Re-exports all networking components.
+
+### Running Tests & Signaler
+```bash
+# Start local LAN signaling server
+npm run signaler
+
+# Run isolated networking test suite
+npm test
+```
