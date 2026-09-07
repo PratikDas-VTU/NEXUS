@@ -12,6 +12,7 @@ interface DeviceTabProps {
   deviceId?: string;
   outboxCount?: number;
   localCacheCount?: number;
+  onOpenAdmin?: () => void;
 }
 
 export const DeviceTab: React.FC<DeviceTabProps> = ({
@@ -21,6 +22,7 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
   deviceId,
   outboxCount = 0,
   localCacheCount = 0,
+  onOpenAdmin,
 }) => {
   const {
     currentLocation,
@@ -598,6 +600,16 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
 
       {/* Tactile Actions */}
       <div className="flex flex-col gap-3 shrink-0">
+        {onOpenAdmin && (
+          <button
+            onClick={onOpenAdmin}
+            className="w-full h-12 rounded-2xl bg-gradient-to-r from-[#002957] to-[#15325b] hover:from-[#00346e] hover:to-[#1b3e70] active:scale-[0.98] transition-all border border-[#3e90ff]/40 text-[#e5e2e1] font-semibold text-[14px] flex items-center justify-center gap-2 cursor-pointer shadow-md"
+          >
+            <span className="material-symbols-outlined text-[20px] text-[#aac7ff]">admin_panel_settings</span>
+            <span>Launch Amrita Command Hub (Admin)</span>
+          </button>
+        )}
+
         <button
           onClick={() => setShowQrModal(true)}
           className="w-full h-12 rounded-2xl bg-[#201f1f] hover:bg-[#2a2a2a] active:scale-[0.98] transition-all border border-[#2a2a2a] text-[#e5e2e1] font-semibold text-[14px] flex items-center justify-center gap-2 cursor-pointer shadow-md"
