@@ -3,7 +3,8 @@ import { DeviceProfile } from '../types';
 import { initialDeviceProfile } from '../data/mockData';
 import { useNexusServices } from '../context/ServiceContext';
 import { formatCoordinates, isInsecureLanOrigin } from '../services/api/geolocation';
-import { MapPin, Bell, HardDrive, Sun, Bluetooth, RefreshCw, CheckCircle2, AlertTriangle, ExternalLink } from 'lucide-react';
+import { testGeminiApiKey } from '../services/api/geminiService';
+import { MapPin, Bell, HardDrive, Sun, Bluetooth, RefreshCw, CheckCircle2, AlertTriangle, ExternalLink, Sparkles } from 'lucide-react';
 
 interface DeviceTabProps {
   onShowToast: (msg: string) => void;
@@ -41,6 +42,7 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
   const [isRefreshingGps, setIsRefreshingGps] = useState<boolean>(false);
   const [isTestingBt, setIsTestingBt] = useState<boolean>(false);
   const [btTestResult, setBtTestResult] = useState<string | null>(null);
+  const [isTestingGemini, setIsTestingGemini] = useState<boolean>(false);
 
   // Real Hardware Battery Inspection
   const [batteryData, setBatteryData] = useState<{
@@ -173,6 +175,16 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
       } else {
         onShowToast('Wake lock unavailable on this origin/browser.');
       }
+    }
+  };
+
+  const handleTestGemini = async () => {
+    setIsTestingGemini(true);
+    try {
+      const res = await testGeminiApiKey();
+      onShowToast(res.message);
+    } finally {
+      setIsTestingGemini(false);
     }
   };
 
@@ -321,6 +333,41 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
               <span>{isRefreshingGps ? 'Fixing...' : 'Refresh'}</span>
             </button>
           </div>
+
+          {/* Mobile Offline Satellite GPS Guide */}
+          {isInsecureLanOrigin() && locationState !== 'LIVE' && (
+            <div className="p-3 bg-[#1e1b13] border-t border-[#382f18] text-[#ffd67a] text-xs flex flex-col gap-1.5">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold flex items-center gap-1.5 text-[12px] text-[#ffcc00]">
+                  <span>🛰️ How to Enable Offline Satellite GPS on Mobile</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (navigator.clipboard) {
+                      navigator.clipboard.writeText(window.location.origin);
+                      onShowToast('Copied origin to clipboard: ' + window.location.origin);
+                    }
+                  }}
+                  className="text-[10px] px-2 py-0.5 rounded bg-[#332a15] hover:bg-[#473b1d] text-[#ffe699] border border-[#665427] cursor-pointer"
+                >
+                  Copy Origin
+                </button>
+              </div>
+              <p className="text-[11px] text-[#c7be9f] leading-relaxed">
+                Chrome security blocks direct hardware GPS on plain HTTP LAN IPs. To unlock 100% offline satellite GPS on your phones:
+              </p>
+              <ol className="text-[10.5px] text-[#d6cdb2] list-decimal list-inside space-y-0.5 bg-black/30 p-2 rounded-xl font-mono">
+                <li>Open <span className="text-[#ffd67a]">chrome://flags</span> in mobile Chrome</li>
+                <li>Search <span className="text-[#ffd67a]">unsafely-treat-insecure-origin-as-secure</span></li>
+                <li>Set to <strong>Enabled</strong> & paste <span className="text-white underline">{window.location.origin}</span></li>
+                <li>Tap <strong>Relaunch</strong> at bottom of Chrome</li>
+              </ol>
+              <span className="text-[10px] text-[#8b91a0]">
+                Hardware GPS satellite lock works completely offline with zero SIM, cell data, or internet!
+              </span>
+            </div>
+          )}
 
           {/* B. Persistent Storage */}
           <div className="p-3.5 flex items-center justify-between">
@@ -475,6 +522,34 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
                 {isInsecure ? 'HTTP Mode' : 'Unsupported'}
               </span>
             )}
+          </div>
+
+          {/* F. Gemini 3.5 Flash Intelligence */}
+          <div className="p-3.5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-[#9c27b0]/15 text-[#ce93d8] flex items-center justify-center shrink-0">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-semibold text-[#e5e2e1]">Gemini 3.5 Flash Intelligence</span>
+                  <span className="text-[9px] px-1.5 py-0.2 rounded font-bold uppercase bg-[#9c27b0]/20 text-[#ce93d8]">
+                    API Loaded
+                  </span>
+                </div>
+                <span className="text-[11px] text-[#8b91a0] mt-0.5">
+                  gemini-3.5-flash-lite · AI Incident Triage & Landmark Geocoding
+                </span>
+              </div>
+            </div>
+            <button
+              onClick={handleTestGemini}
+              disabled={isTestingGemini}
+              className="py-1 px-2.5 rounded-xl bg-[#2a2a2a] hover:bg-[#353534] text-[#e5e2e1] text-[11px] font-semibold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+            >
+              <Sparkles className={`w-3 h-3 ${isTestingGemini ? 'animate-spin text-[#ffb84e]' : 'text-[#ce93d8]'}`} />
+              <span>{isTestingGemini ? 'Checking...' : 'Test AI'}</span>
+            </button>
           </div>
         </div>
       </div>

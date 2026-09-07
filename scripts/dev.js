@@ -25,7 +25,8 @@ console.log('\x1b[1m\x1b[35m====================================================
 console.log('\x1b[36m[SIGNALER]\x1b[0m Target: ws://localhost:8080 & http://localhost:8080/status');
 console.log(`\x1b[32m[FRONTEND]\x1b[0m Protocol: ${isHttps ? 'HTTPS (Secure Origin)' : 'HTTP (Zero-SSL)'} Target: ${isHttps ? 'https' : 'http'}://localhost:3000`);
 if (!isHttps) {
-  console.log('\x1b[33m[TIP]\x1b[0m For native mobile Chrome GPS & Bluetooth, run: npm run dev -- --https');
+  console.log('\x1b[33m[OFFLINE GPS TIP]\x1b[0m In Android Chrome, enable chrome://flags/#unsafely-treat-insecure-origin-as-secure for your LAN IP to unlock native offline hardware GPS!');
+  console.log('\x1b[33m[HTTPS TIP]\x1b[0m Or start secure mode with: npm run dev:https');
 }
 console.log('\x1b[1m\x1b[35m====================================================\x1b[0m\n');
 

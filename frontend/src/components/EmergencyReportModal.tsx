@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { X, MapPin, AlertTriangle, CheckCircle2, RefreshCw, User, ShieldAlert, Edit3 } from 'lucide-react';
+import { X, MapPin, AlertTriangle, CheckCircle2, RefreshCw, User, ShieldAlert, Edit3, Sparkles } from 'lucide-react';
 import type { DraftIncident, IncidentType, IncidentPriority } from '../../../shared/types';
-import { GeolocationCoordinates, LocationState, formatCoordinates, getCurrentPosition } from '../services/api/geolocation';
+import { GeolocationCoordinates, LocationState, formatCoordinates, getCurrentPosition, isInsecureLanOrigin } from '../services/api/geolocation';
+import { parseEmergencyWithGemini, CAMPUS_LANDMARKS, isOnlineForGemini } from '../services/api/geminiService';
 
 interface EmergencyReportModalProps {
   isOpen: boolean;
@@ -47,6 +48,46 @@ export const EmergencyReportModal: React.FC<EmergencyReportModalProps> = ({
 
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [formError, setFormError] = useState<string>('');
+  const [isAiParsing, setIsAiParsing] = useState<boolean>(false);
+  const [aiNotice, setAiNotice] = useState<string | null>(null);
+
+  const handleAiAssist = async () => {
+    if (!description.trim()) {
+      setAiNotice('Type details below first (e.g. "Water leak at Block 1, 2 people need help")');
+      return;
+    }
+    setIsAiParsing(true);
+    setAiNotice(null);
+    try {
+      const result = await parseEmergencyWithGemini(description);
+      if (result) {
+        if (result.type) {
+          const matched = (Object.keys(NEED_CONFIG) as NeedCategory[]).find(
+            (k) => NEED_CONFIG[k].defaultType === result.type
+          );
+          if (matched) setSelectedNeed(matched);
+        }
+        if (result.priority) setUrgency(result.priority);
+        if (result.latitude && result.longitude) {
+          setLatInput(result.latitude.toFixed(5));
+          setLngInput(result.longitude.toFixed(5));
+          setLocationSource('MANUAL');
+        }
+        if (result.peopleAffected) setPeopleAffected(result.peopleAffected);
+        setAiNotice(`Gemini AI: Classified as ${result.type.toUpperCase()} (${result.priority}) at ${result.landmarkName}`);
+      } else {
+        setAiNotice(
+          isOnlineForGemini()
+            ? 'AI analysis completed without changes.'
+            : 'Device is offline. Using local emergency defaults.'
+        );
+      }
+    } catch {
+      setAiNotice('Gemini AI analysis currently unavailable.');
+    } finally {
+      setIsAiParsing(false);
+    }
+  };
 
   // Synchronize initial location upon opening
   useEffect(() => {
@@ -332,9 +373,30 @@ export const EmergencyReportModal: React.FC<EmergencyReportModalProps> = ({
                   type="text"
                   value={lngInput}
                   onChange={(e) => handleManualEditLng(e.target.value)}
-                  placeholder="77.5946"
+                  placeholder="80.0094"
                   className="w-full bg-[#1c1b1b] border border-[#2a2a2a] rounded-xl px-2.5 py-1.5 text-xs text-[#e5e2e1] font-mono focus:border-[#3e90ff] focus:outline-none"
                 />
+              </div>
+            </div>
+
+            {/* Quick Campus Landmark Presets */}
+            <div className="flex flex-col gap-1 pt-0.5">
+              <span className="text-[9.5px] text-[#8b91a0]">Quick Campus Presets:</span>
+              <div className="flex flex-wrap gap-1">
+                {Object.entries(CAMPUS_LANDMARKS).map(([key, lm]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => {
+                      setLatInput(lm.lat.toFixed(5));
+                      setLngInput(lm.lng.toFixed(5));
+                      setLocationSource('MANUAL');
+                    }}
+                    className="text-[9.5px] px-2 py-0.5 rounded-lg bg-[#1f1f1f] hover:bg-[#282828] text-[#aac7ff] border border-[#2d2d38] cursor-pointer active:scale-95"
+                  >
+                    {lm.label.split(' ')[0]} {lm.label.split(' ')[1] || ''}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -356,6 +418,18 @@ export const EmergencyReportModal: React.FC<EmergencyReportModalProps> = ({
               </button>
             </div>
 
+            {/* Insecure Origin Satellite GPS Guide */}
+            {isInsecureLanOrigin() && locationSource === 'MANUAL' && (
+              <div className="p-2 rounded-xl bg-[#1f1d14] border border-[#524419] text-[#ffd67a] text-[10px] leading-relaxed">
+                <div className="font-semibold flex items-center gap-1 mb-0.5">
+                  <span>🛰️ Mobile Offline Hardware GPS:</span>
+                </div>
+                <span>
+                  Chrome blocks satellite GPS on plain HTTP. In mobile Chrome, open <code className="font-mono bg-black/40 px-1 py-0.2 rounded text-white">chrome://flags</code>, enable <code className="font-mono bg-black/40 px-1 py-0.2 rounded text-white">unsafely-treat-insecure-origin-as-secure</code> for <span className="font-mono font-semibold text-white">{window.location.origin}</span>, and tap Relaunch.
+                </span>
+              </div>
+            )}
+
             {locationError && (
               <div className="p-2 rounded-xl bg-[#2c1515] border border-[#662020] text-[#ffb4ab] text-[10.5px] flex items-start gap-1.5">
                 <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
@@ -364,18 +438,36 @@ export const EmergencyReportModal: React.FC<EmergencyReportModalProps> = ({
             )}
           </div>
 
-          {/* 5. Additional Details */}
+          {/* 5. Additional Details with Gemini AI Assist */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] font-bold uppercase tracking-wider text-[#aac7ff]">
-              5. Details / Situation (Optional)
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-bold uppercase tracking-wider text-[#aac7ff]">
+                5. Details / Situation (Optional)
+              </label>
+              <button
+                type="button"
+                onClick={handleAiAssist}
+                disabled={isAiParsing}
+                className="text-[10px] px-2 py-0.5 rounded-lg bg-[#3e90ff]/15 hover:bg-[#3e90ff]/25 text-[#aac7ff] border border-[#3e90ff]/30 flex items-center gap-1 cursor-pointer disabled:opacity-50 transition-all active:scale-95"
+                title="Use Gemini 3.5 AI to auto-classify category, urgency, and campus coordinates"
+              >
+                <Sparkles className={`w-3 h-3 ${isAiParsing ? 'animate-spin text-[#ffb84e]' : 'text-[#3e90ff]'}`} />
+                <span>{isAiParsing ? 'Analyzing...' : 'AI Auto-Triage (Gemini)'}</span>
+              </button>
+            </div>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="e.g. 2nd floor balcony, elderly person trapped, water level rising fast..."
+              placeholder="e.g. 2nd floor balcony at Block 1, elderly person trapped, water level rising fast..."
               rows={2}
               className="w-full bg-[#131313] border border-[#2a2a2a] rounded-xl p-2.5 text-xs text-[#e5e2e1] focus:border-[#3e90ff] focus:outline-none resize-none"
             />
+            {aiNotice && (
+              <div className="p-2 rounded-xl bg-[#0f2438] border border-[#1b4369] text-[#aac7ff] text-[10.5px] flex items-center gap-1.5 animate-in fade-in duration-150">
+                <Sparkles className="w-3.5 h-3.5 text-[#ffb84e] shrink-0" />
+                <span>{aiNotice}</span>
+              </div>
+            )}
           </div>
 
           {formError && (
