@@ -449,4 +449,211 @@ describe('Autonomous Mesh Architecture (Phase 6 — Step 5B.6)', () => {
       expect(manifestMsg.items.some((i) => i.incidentId === 'inc-offline-999')).toBe(true);
     }
   });
+
+  // ─── 12. MULTI-PEER OUTGOING CONNECTION SERIALIZATION ──────────────────────
+  it('12. serializes concurrent outgoing connection attempts through connectQueue to prevent RF radio collision', async () => {
+    const controller = new NearbyMeshController({
+      localDeviceId: 'node-aaa',
+      bridge: bridgeA,
+      relayEngine: relayA,
+      autoConnect: true,
+    });
+
+    // Discover Node B and Node C at the exact same moment
+    // Node AAA < Node BBB -> initiator
+    // Node AAA < Node CCC -> initiator
+    bridgeA.triggerFound({
+      endpointId: 'ep-b',
+      endpointName: 'node-bbb',
+      serviceId: 'nexus-mesh-v1',
+    });
+    bridgeA.triggerFound({
+      endpointId: 'ep-c',
+      endpointName: 'node-ccc',
+      serviceId: 'nexus-mesh-v1',
+    });
+
+    // Exactly one outgoing connect call must be in-flight (to ep-b)
+    expect(bridgeA.connectCalls.length).toBe(1);
+    expect(bridgeA.connectCalls[0].endpointId).toBe('ep-b');
+
+    // ep-c must be queued in outgoingConnectQueue
+    expect((controller as any).outgoingConnectQueue).toEqual(['ep-c']);
+    expect((controller as any).isOutgoingHandshakeInProgress).toBe(true);
+
+    // Now complete handshake for ep-b
+    bridgeA.triggerResult('ep-b', 'CONNECTED');
+
+    // Queue must automatically advance and call connect on ep-c!
+    expect(bridgeA.connectCalls.length).toBe(2);
+    expect(bridgeA.connectCalls[1].endpointId).toBe('ep-c');
+    expect((controller as any).outgoingConnectQueue).toEqual([]);
+  });
+
+  it('13. incoming connection preempts pending outgoing connection in queue without dual handshake', async () => {
+    const controller = new NearbyMeshController({
+      localDeviceId: 'node-aaa',
+      bridge: bridgeA,
+      relayEngine: relayA,
+      autoConnect: true,
+    });
+
+    // Discover Node B (in flight) and Node C (queued)
+    bridgeA.triggerFound({
+      endpointId: 'ep-b',
+      endpointName: 'node-bbb',
+      serviceId: 'nexus-mesh-v1',
+    });
+    bridgeA.triggerFound({
+      endpointId: 'ep-c',
+      endpointName: 'node-ccc',
+      serviceId: 'nexus-mesh-v1',
+    });
+
+    expect((controller as any).outgoingConnectQueue).toEqual(['ep-c']);
+
+    // Node C initiates incoming connection to Node A before A gets to it in the queue
+    bridgeA.triggerInitiated({
+      endpointId: 'ep-c',
+      endpointName: 'node-ccc',
+      serviceId: 'nexus-mesh-v1',
+    });
+
+    // ep-c must be removed from outgoingConnectQueue since incoming handshake arrived
+    expect((controller as any).outgoingConnectQueue).toEqual([]);
+
+    // ep-b resolves
+    bridgeA.triggerResult('ep-b', 'CONNECTED');
+
+    // ep-c resolves
+    bridgeA.triggerResult('ep-c', 'CONNECTED');
+
+    // Both are connected cleanly without duplicate connect() to ep-c
+    expect(bridgeA.connectCalls.length).toBe(1);
+    expect(controller.getConnectedCount()).toBe(2);
+  });
+
+  // ─── 14. STORE-AND-FORWARD MULTI-PEER PROPAGATION IN RELAYENGINE ──────────
+  it('14. Node B ingesting payload from Node A automatically propagates manifest to Node C (multi-hop store-and-forward)', async () => {
+    const storageB = new MockStorageAdapter();
+    const relayB = new RelayEngine('node-bbb', storageB);
+
+    const sentToA: RelayMessage[] = [];
+    const sentToC: RelayMessage[] = [];
+
+    const mockTransportA = {
+      remotePeerId: 'node-aaa',
+      transportType: 'nearby' as const,
+      isOpen: () => true,
+      send: async (msg: RelayMessage) => {
+        sentToA.push(msg);
+      },
+      onMessage: () => {},
+      onClose: () => {},
+      close: () => {},
+    };
+
+    const mockTransportC = {
+      remotePeerId: 'node-ccc',
+      transportType: 'nearby' as const,
+      isOpen: () => true,
+      send: async (msg: RelayMessage) => {
+        sentToC.push(msg);
+      },
+      onMessage: () => {},
+      onClose: () => {},
+      close: () => {},
+    };
+
+    relayB.registerTransport(mockTransportA);
+    relayB.registerTransport(mockTransportC);
+
+    // Initial handshake sent HELLO to both
+    expect(sentToA.some((m) => m.type === 'HELLO')).toBe(true);
+    expect(sentToC.some((m) => m.type === 'HELLO')).toBe(true);
+
+    const sessionA = relayB.getPeerSession('node-aaa')!;
+    const sessionC = relayB.getPeerSession('node-ccc')!;
+    expect(sessionA).toBeDefined();
+    expect(sessionC).toBeDefined();
+
+    // Node A sends PAYLOAD with a new incident to Node B
+    const incomingIncident = {
+      incidentId: 'inc-relay-from-a',
+      senderDeviceId: 'node-aaa',
+      timestamp: Date.now(),
+      type: 'medical' as const,
+      priority: 'P0' as const,
+      status: 'stored' as const,
+      location: { latitude: 13.0827, longitude: 80.2707 },
+      peopleAffected: 3,
+      version: 1,
+      ttl: 3600000,
+      hopCount: 1,
+    };
+
+    // Trigger handlePayload on Node B from session A
+    await (relayB as any).handlePayload(sessionA, {
+      type: 'PAYLOAD',
+      senderDeviceId: 'node-aaa',
+      protocolVersion: 1,
+      sessionId: sessionA.sessionId,
+      timestamp: Date.now(),
+      incidents: [incomingIncident],
+    });
+
+    // 1. Node B must have replied with ACK to Node A
+    const ackToA = sentToA.find((m) => m.type === 'ACK');
+    expect(ackToA).toBeDefined();
+
+    // 2. Incident must be stored in Node B's local storage
+    const storedInB = await storageB.hasIncident('inc-relay-from-a');
+    expect(storedInB).toBe(true);
+
+    // Wait for coalesced debounce timer (50ms)
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // 3. Node B must have automatically sent an updated MANIFEST to Node C (and NOT back to Node A)!
+    const manifestToC = sentToC.find((m) => m.type === 'MANIFEST');
+    expect(manifestToC).toBeDefined();
+    if (manifestToC && manifestToC.type === 'MANIFEST') {
+      expect(manifestToC.items.some((i) => i.incidentId === 'inc-relay-from-a')).toBe(true);
+    }
+  });
+
+  // ─── 15. CONFIGURABLE HOP BUDGET ──────────────────────────────────────────
+  it('15. supports configurable maxHops without limiting logical network size', async () => {
+    const customRelay = new RelayEngine('node-custom', storageA, undefined, 10);
+    expect(customRelay.getMaxHops()).toBe(10);
+
+    customRelay.setMaxHops(15);
+    expect(customRelay.getMaxHops()).toBe(15);
+
+    // Test forwarding eligibility with hopCount = 8 (eligible with maxHops=15, ineligible with default=3)
+    const incWith8Hops = {
+      incidentId: 'inc-hops-8',
+      senderDeviceId: 'node-far',
+      timestamp: Date.now(),
+      type: 'trapped' as const,
+      priority: 'P0' as const,
+      status: 'stored' as const,
+      location: { latitude: 13.0, longitude: 80.0 },
+      peopleAffected: 1,
+      version: 1,
+      ttl: 3600000,
+      hopCount: 8,
+    };
+
+    // Default maxHops (3) rejects 8 hops
+    const eligibleUnderDefault = (await import('../shared/constants')).isEligibleForForwarding(incWith8Hops);
+    expect(eligibleUnderDefault).toBe(false);
+
+    // Configured maxHops (15) accepts 8 hops
+    const eligibleUnderCustom = (await import('../shared/constants')).isEligibleForForwarding(
+      incWith8Hops,
+      Date.now(),
+      customRelay.getMaxHops()
+    );
+    expect(eligibleUnderCustom).toBe(true);
+  });
 });

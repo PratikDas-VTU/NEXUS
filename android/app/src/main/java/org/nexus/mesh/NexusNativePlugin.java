@@ -105,7 +105,12 @@ public class NexusNativePlugin extends Plugin {
     private ConnectionsClient connectionsClient;
     private volatile boolean isAdvertising = false;
     private volatile boolean isDiscovering = false;
+    private volatile boolean shouldBeDiscovering = false;
     private volatile String currentServiceId = DEFAULT_SERVICE_ID;
+
+    // In-flight connection handshakes tracking (for radio safety and dynamic discovery resume)
+    private final java.util.Set<String> connectingEndpoints = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final Map<String, Long> connectingTimestamps = new ConcurrentHashMap<>();
 
     // Discovered and connected endpoints bookkeeping
     private static class EndpointState {
@@ -371,6 +376,8 @@ public class NexusNativePlugin extends Plugin {
             return;
         }
 
+        this.shouldBeDiscovering = true;
+
         if (isDiscovering) {
             Log.i(TAG, "Discovery already active for service: " + currentServiceId);
             call.resolve();
@@ -399,6 +406,9 @@ public class NexusNativePlugin extends Plugin {
     @PluginMethod
     public void stopDiscovery(PluginCall call) {
         try {
+            shouldBeDiscovering = false;
+            connectingEndpoints.clear();
+            connectingTimestamps.clear();
             ConnectionsClient client = getClient();
             if (client != null) {
                 client.stopDiscovery();
@@ -467,15 +477,19 @@ public class NexusNativePlugin extends Plugin {
         }
         final String localName = deviceName;
 
+        connectingEndpoints.add(endpointId);
+        connectingTimestamps.put(endpointId, System.currentTimeMillis());
+
         // Best Practice: Temporarily pause discovery during connection handshake
         // to free Bluetooth/Wi-Fi radio resources and prevent RF packet contention.
         if (isDiscovering) {
             try {
                 Log.i(TAG, "Pausing discovery to facilitate connection handshake to " + endpointId);
                 client.stopDiscovery();
-                isDiscovering = false;
             } catch (Exception e) {
                 Log.w(TAG, "Failed to pause discovery before connect: " + e.getMessage());
+            } finally {
+                isDiscovering = false;
             }
         }
 
@@ -485,6 +499,10 @@ public class NexusNativePlugin extends Plugin {
                 call.resolve();
             })
             .addOnFailureListener(e -> {
+                connectingEndpoints.remove(endpointId);
+                connectingTimestamps.remove(endpointId);
+                resumeDiscoveryIfNecessary();
+
                 String errMsg = e.getMessage() != null ? e.getMessage() : "";
                 if (connectedEndpoints.containsKey(endpointId) || errMsg.contains("8003") || errMsg.contains("ALREADY_CONNECTED")) {
                     Log.i(TAG, "Endpoint " + endpointId + " is already connected or connecting: " + errMsg);
@@ -504,6 +522,9 @@ public class NexusNativePlugin extends Plugin {
                 + ", isIncoming=" + connectionInfo.isIncomingConnection()
                 + ", authDigits=" + connectionInfo.getAuthenticationDigits());
 
+            connectingEndpoints.add(endpointId);
+            connectingTimestamps.put(endpointId, System.currentTimeMillis());
+
             // Also pause discovery on the receiving side if active to ensure the handshake has full radio bandwidth
             if (isDiscovering) {
                 try {
@@ -511,10 +532,11 @@ public class NexusNativePlugin extends Plugin {
                     if (client != null) {
                         Log.i(TAG, "Pausing discovery on incoming connection handshake from " + endpointId);
                         client.stopDiscovery();
-                        isDiscovering = false;
                     }
                 } catch (Exception e) {
                     Log.w(TAG, "Failed to pause discovery on connectionInitiated: " + e.getMessage());
+                } finally {
+                    isDiscovering = false;
                 }
             }
 
@@ -539,6 +561,10 @@ public class NexusNativePlugin extends Plugin {
                     .addOnSuccessListener(unused -> Log.i(TAG, "acceptConnection succeeded for " + endpointId))
                     .addOnFailureListener(e -> {
                         Log.w(TAG, "acceptConnection failed for " + endpointId + ": " + e.getMessage());
+                        connectingEndpoints.remove(endpointId);
+                        connectingTimestamps.remove(endpointId);
+                        resumeDiscoveryIfNecessary();
+
                         JSObject res = new JSObject();
                         res.put("endpointId", endpointId);
                         res.put("status", "ERROR");
@@ -552,6 +578,9 @@ public class NexusNativePlugin extends Plugin {
 
         @Override
         public void onConnectionResult(@NonNull String endpointId, @NonNull ConnectionResolution result) {
+            connectingEndpoints.remove(endpointId);
+            connectingTimestamps.remove(endpointId);
+
             int statusCode = result.getStatus().getStatusCode();
             String statusDesc = getStatusDescription(statusCode);
             String statusMsg = result.getStatus().getStatusMessage();
@@ -584,6 +613,9 @@ public class NexusNativePlugin extends Plugin {
                 event.put("message", "Connection failed: " + statusDesc + " (code " + statusCode + ")");
             }
             notifyListeners("connectionResult", event);
+
+            // Dynamic Multi-Peer Mesh: Resume discovery once handshake completes so additional peers can join
+            resumeDiscoveryIfNecessary();
         }
 
         @Override
@@ -591,11 +623,15 @@ public class NexusNativePlugin extends Plugin {
             Log.i(TAG, "Endpoint disconnected: " + endpointId);
             connectedEndpoints.remove(endpointId);
             discoveredEndpoints.remove(endpointId);
+            connectingEndpoints.remove(endpointId);
+            connectingTimestamps.remove(endpointId);
 
             JSObject event = new JSObject();
             event.put("endpointId", endpointId);
             event.put("reason", "Remote peer or radio disconnected");
             notifyListeners("disconnected", event);
+
+            resumeDiscoveryIfNecessary();
         }
     };
 
@@ -720,11 +756,15 @@ public class NexusNativePlugin extends Plugin {
             } finally {
                 connectedEndpoints.remove(endpointId);
                 discoveredEndpoints.remove(endpointId);
+                connectingEndpoints.remove(endpointId);
+                connectingTimestamps.remove(endpointId);
 
                 JSObject event = new JSObject();
                 event.put("endpointId", endpointId);
                 event.put("reason", "Disconnected locally");
                 notifyListeners("disconnected", event);
+
+                resumeDiscoveryIfNecessary();
             }
         }
         call.resolve();
@@ -733,6 +773,9 @@ public class NexusNativePlugin extends Plugin {
     @PluginMethod
     public void disconnectAll(PluginCall call) {
         try {
+            shouldBeDiscovering = false;
+            connectingEndpoints.clear();
+            connectingTimestamps.clear();
             ConnectionsClient client = getClient();
             if (client != null) {
                 client.stopAllEndpoints();
@@ -750,6 +793,58 @@ public class NexusNativePlugin extends Plugin {
             discoveredEndpoints.clear();
         }
         call.resolve();
+    }
+
+    /**
+     * Resumes Nearby discovery if discovery was active and all in-flight handshakes have completed.
+     * Prevents permanent discovery failure in multi-peer cluster meshes.
+     */
+    private synchronized void resumeDiscoveryIfNecessary() {
+        if (!shouldBeDiscovering) {
+            return;
+        }
+
+        // Clean up stale handshakes (> 25 seconds) to prevent permanent discovery deadlocks
+        long now = System.currentTimeMillis();
+        for (Map.Entry<String, Long> entry : connectingTimestamps.entrySet()) {
+            if (now - entry.getValue() > 25000) {
+                Log.w(TAG, "Cleaning up stale handshake for " + entry.getKey());
+                connectingEndpoints.remove(entry.getKey());
+                connectingTimestamps.remove(entry.getKey());
+            }
+        }
+
+        if (!connectingEndpoints.isEmpty()) {
+            Log.i(TAG, "Discovery resume deferred: " + connectingEndpoints.size() + " handshake(s) in progress (" + connectingEndpoints + ")");
+            return;
+        }
+
+        if (isDiscovering) {
+            return;
+        }
+
+        ConnectionsClient client = getClient();
+        if (client == null || !hasNearbyRuntimePermissions()) {
+            Log.w(TAG, "Cannot resume discovery: client or permissions unavailable");
+            return;
+        }
+
+        DiscoveryOptions discoveryOptions = new DiscoveryOptions.Builder()
+            .setStrategy(NEARBY_STRATEGY)
+            .build();
+
+        final String finalServiceId = currentServiceId;
+        Log.i(TAG, "Resuming Nearby discovery on service: " + finalServiceId);
+
+        client.startDiscovery(finalServiceId, endpointDiscoveryCallback, discoveryOptions)
+            .addOnSuccessListener(unused -> {
+                isDiscovering = true;
+                Log.i(TAG, "Nearby discovery successfully resumed on service: " + finalServiceId);
+            })
+            .addOnFailureListener(e -> {
+                isDiscovering = false;
+                Log.w(TAG, "Failed to resume Nearby discovery: " + e.getMessage(), e);
+            });
     }
 
     // ─── 8. PLUGIN LIFECYCLE CLEANUP ────────────────────────────────────────
@@ -771,8 +866,11 @@ public class NexusNativePlugin extends Plugin {
         } catch (Exception e) {
             Log.w(TAG, "Error during plugin destroy cleanup: " + e.getMessage());
         } finally {
+            shouldBeDiscovering = false;
             isAdvertising = false;
             isDiscovering = false;
+            connectingEndpoints.clear();
+            connectingTimestamps.clear();
             connectedEndpoints.clear();
             discoveredEndpoints.clear();
             connectionsClient = null;

@@ -69,16 +69,28 @@ export class RelayEngine implements INetworkRelayService {
   private currentSignalingUrl?: string;
   private totalRelayedCounter = 0;
   private transportManager?: MultiTransportManager;
+  private maxHops: number;
+  private peerSyncTimeouts = new Map<string, any>();
   public onPurge?: (fromPeerId: string, reason?: string) => void;
 
   constructor(
     localDeviceId: DeviceId,
     storageAdapter: IOfflineStorageAdapter,
-    transportManager?: MultiTransportManager
+    transportManager?: MultiTransportManager,
+    maxHops: number = MAX_HOPS
   ) {
     this.localDeviceId = localDeviceId;
     this.storage = storageAdapter;
     this.transportManager = transportManager;
+    this.maxHops = maxHops;
+  }
+
+  public setMaxHops(hops: number): void {
+    this.maxHops = hops;
+  }
+
+  public getMaxHops(): number {
+    return this.maxHops;
   }
 
   public getTransportManager(): MultiTransportManager | undefined {
@@ -141,6 +153,11 @@ export class RelayEngine implements INetworkRelayService {
 
     transport.onClose((reason?: string) => {
       console.log(`[RelayEngine] Peer ${peerId} disconnected. Reason:`, reason || 'normal');
+      const syncTimer = this.peerSyncTimeouts.get(peerId);
+      if (syncTimer) {
+        clearTimeout(syncTimer);
+        this.peerSyncTimeouts.delete(peerId);
+      }
       this.activePeers.delete(peerId);
       this.notifyStatusChange();
     });
@@ -284,7 +301,7 @@ export class RelayEngine implements INetworkRelayService {
 
     for (const inc of requestedIncidents) {
       // Golden Rule: Stop forwarding if hop budget exhausted, expired, or resolved
-      if (!isEligibleForForwarding(inc)) {
+      if (!isEligibleForForwarding(inc, undefined, this.maxHops)) {
         continue;
       }
 
@@ -312,11 +329,11 @@ export class RelayEngine implements INetworkRelayService {
 
     for (const inc of msg.incidents) {
       // Validation Rule 1: Hop budget check
-      if (inc.hopCount > MAX_HOPS) {
+      if (inc.hopCount > this.maxHops) {
         rejectedItems.push({
           incidentId: inc.incidentId,
           code: 'HOP_BUDGET_EXCEEDED',
-          reason: `Hop count ${inc.hopCount} exceeds limit of ${MAX_HOPS}`,
+          reason: `Hop count ${inc.hopCount} exceeds limit of ${this.maxHops}`,
         });
         continue;
       }
@@ -350,6 +367,14 @@ export class RelayEngine implements INetworkRelayService {
 
     session.state = 'SYNCED';
     this.notifyStatusChange();
+
+    // STORE-AND-FORWARD MULTI-HOP PROPAGATION:
+    // If new or updated incidents were accepted into local storage, schedule manifest
+    // synchronization toward all other eligible connected peers (coalesced/debounced,
+    // excluding the sender peer to prevent unnecessary ping-pong).
+    if (acceptedIds.length > 0) {
+      this.schedulePeerSync(session.peerId);
+    }
   }
 
   /**
@@ -424,6 +449,11 @@ export class RelayEngine implements INetworkRelayService {
   }
 
   public async stop(): Promise<void> {
+    for (const timer of this.peerSyncTimeouts.values()) {
+      clearTimeout(timer);
+    }
+    this.peerSyncTimeouts.clear();
+
     for (const [peerId, session] of this.activePeers) {
       session.transport.close();
     }
@@ -447,12 +477,54 @@ export class RelayEngine implements INetworkRelayService {
     return session;
   }
 
-  public async triggerPeerSync(): Promise<void> {
-    for (const session of this.activePeers.values()) {
-      if (session.transport.isOpen()) {
-        await this.sendLocalManifest(session);
+  /**
+   * Schedules manifest synchronization across active peers with coalescing.
+   *
+   * Debounces per-peer manifest updates by default 50ms so rapid successive payload ingests
+   * coalesce into a single MANIFEST packet, preventing manifest floods while ensuring
+   * immediate multi-hop propagation.
+   *
+   * @param excludePeerId - Peer to exclude from this sync cycle (typically the sender of the payload)
+   * @param delayMs - Debounce delay in milliseconds (default 50ms, 0 for immediate)
+   */
+  public schedulePeerSync(excludePeerId?: string, delayMs: number = 50): void {
+    for (const [peerId, session] of this.activePeers) {
+      if (excludePeerId && (peerId === excludePeerId || session.peerDeviceId === excludePeerId)) {
+        continue;
+      }
+      if (!session.transport.isOpen()) {
+        continue;
+      }
+
+      const existingTimer = this.peerSyncTimeouts.get(peerId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
+
+      if (delayMs <= 0) {
+        this.peerSyncTimeouts.delete(peerId);
+        this.sendLocalManifest(session).catch((err) => {
+          console.warn(`[RelayEngine] Immediate peer sync to ${peerId} failed:`, err);
+        });
+      } else {
+        const timer = setTimeout(async () => {
+          this.peerSyncTimeouts.delete(peerId);
+          try {
+            if (session.transport.isOpen()) {
+              await this.sendLocalManifest(session);
+            }
+          } catch (err) {
+            console.warn(`[RelayEngine] Coalesced peer sync to ${peerId} failed:`, err);
+          }
+        }, delayMs);
+
+        this.peerSyncTimeouts.set(peerId, timer);
       }
     }
+  }
+
+  public async triggerPeerSync(): Promise<void> {
+    this.schedulePeerSync(undefined, 0);
   }
 
   public async broadcastPurge(reason?: string): Promise<void> {

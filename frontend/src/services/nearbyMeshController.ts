@@ -89,6 +89,8 @@ export class NearbyMeshController {
   private connectionTimeouts = new Map<string, any>();
   private activeTransports = new Map<string, NativeTransport>();
   private pendingConnections = new Set<string>();
+  private outgoingConnectQueue: string[] = [];
+  private isOutgoingHandshakeInProgress = false;
   private transportReadyHandlers: Array<(transport: NativeTransport) => void> = [];
 
   private setConnectionTimeout(endpointId: string): void {
@@ -96,6 +98,10 @@ export class NearbyMeshController {
     const timer = setTimeout(() => {
       this.connectionTimeouts.delete(endpointId);
       this.pendingConnections.delete(endpointId);
+      if (this.isOutgoingHandshakeInProgress) {
+        this.isOutgoingHandshakeInProgress = false;
+        this.processOutgoingConnectQueue();
+      }
       const target = this.nodes.find((n) => n.endpointId === endpointId);
       if (target && target.status === 'CONNECTING') {
         const timeoutMsg = 'Connection attempt timed out (20s)';
@@ -358,24 +364,57 @@ export class NearbyMeshController {
       return;
     }
 
-    // If already in pending connections, ignore
-    if (this.pendingConnections.has(endpoint.endpointId)) {
+    // If already in pending connections or in outgoing queue, ignore
+    if (this.pendingConnections.has(endpoint.endpointId) || this.outgoingConnectQueue.includes(endpoint.endpointId)) {
       return;
     }
 
-    // Deterministic tie-breaker: Compare stable NEXUS device IDs
+    // Deterministic tie-breaker: Compare stable NEXUS device IDs independently per peer pair
     const isInitiator = this.localDeviceId.localeCompare(peerDeviceId) < 0;
     if (isInitiator) {
       console.log(
-        `[NearbyMeshController] Deterministic initiator for ${peerDeviceId} (local: ${this.localDeviceId} < remote: ${peerDeviceId}). Auto-connecting...`
+        `[NearbyMeshController] Deterministic initiator for ${peerDeviceId} (local: ${this.localDeviceId} < remote: ${peerDeviceId}).`
       );
-      this.connect(endpoint.endpointId).catch((err) => {
-        console.warn(`[NearbyMeshController] Auto-connect to ${endpoint.endpointId} failed:`, err);
-      });
+      if (this.isOutgoingHandshakeInProgress) {
+        console.log(
+          `[NearbyMeshController] Outgoing handshake in progress. Enqueueing ${endpoint.endpointId} (${peerDeviceId}) for serialized connect.`
+        );
+        this.outgoingConnectQueue.push(endpoint.endpointId);
+      } else {
+        this.executeOutgoingConnect(endpoint.endpointId);
+      }
     } else {
       console.log(
         `[NearbyMeshController] Deterministic receiver for ${peerDeviceId} (local: ${this.localDeviceId} >= remote: ${peerDeviceId}). Awaiting incoming connection...`
       );
+    }
+  }
+
+  private executeOutgoingConnect(endpointId: string): void {
+    this.isOutgoingHandshakeInProgress = true;
+    this.connect(endpointId).catch((err) => {
+      console.warn(`[NearbyMeshController] Auto-connect to ${endpointId} failed:`, err);
+      this.isOutgoingHandshakeInProgress = false;
+      this.processOutgoingConnectQueue();
+    });
+  }
+
+  private processOutgoingConnectQueue(): void {
+    if (this.isOutgoingHandshakeInProgress) return;
+
+    while (this.outgoingConnectQueue.length > 0) {
+      const nextId = this.outgoingConnectQueue.shift()!;
+      const target = this.nodes.find((n) => n.endpointId === nextId);
+      // Skip if already connected or connecting (e.g. accepted via incoming connection)
+      if (target && (target.status === 'CONNECTED' || target.status === 'CONNECTING')) {
+        continue;
+      }
+      if (this.pendingConnections.has(nextId)) {
+        continue;
+      }
+
+      this.executeOutgoingConnect(nextId);
+      break;
     }
   }
 
@@ -438,6 +477,12 @@ export class NearbyMeshController {
         if (endpoint.serviceId && endpoint.serviceId !== this.serviceId) return;
         if (endpoint.endpointName === this.localDeviceId) return;
 
+        // If this endpoint was queued for outgoing connection, remove it since incoming connection arrived
+        const qIdx = this.outgoingConnectQueue.indexOf(endpoint.endpointId);
+        if (qIdx !== -1) {
+          this.outgoingConnectQueue.splice(qIdx, 1);
+        }
+
         this.pendingConnections.add(endpoint.endpointId);
 
         // Check if we already have this endpoint by ID or by matching name
@@ -490,6 +535,10 @@ export class NearbyMeshController {
         );
         this.clearConnectionTimeout(endpointId);
         this.pendingConnections.delete(endpointId);
+
+        // Free outgoing handshake lock and process next queued endpoint if any
+        this.isOutgoingHandshakeInProgress = false;
+        this.processOutgoingConnectQueue();
 
         if (status === 'CONNECTED') {
           this.nodes = this.nodes.map((n) => {
@@ -575,6 +624,12 @@ export class NearbyMeshController {
         console.log(`[NearbyMeshController] onDisconnected: endpointId=${endpointId}, reason=${reason}`);
         this.clearConnectionTimeout(endpointId);
         this.pendingConnections.delete(endpointId);
+
+        const qIdx = this.outgoingConnectQueue.indexOf(endpointId);
+        if (qIdx !== -1) {
+          this.outgoingConnectQueue.splice(qIdx, 1);
+        }
+        this.processOutgoingConnectQueue();
 
         const existingTransport = this.activeTransports.get(endpointId);
         if (existingTransport) {
@@ -789,12 +844,19 @@ export class NearbyMeshController {
       );
       this.onToast?.(`Failed to initiate connection: ${err?.message}`);
       this.notify();
+      this.isOutgoingHandshakeInProgress = false;
+      this.processOutgoingConnectQueue();
     }
   }
 
   public async disconnect(endpointId: string): Promise<void> {
     this.pendingConnections.delete(endpointId);
     this.clearConnectionTimeout(endpointId);
+    const qIdx = this.outgoingConnectQueue.indexOf(endpointId);
+    if (qIdx !== -1) {
+      this.outgoingConnectQueue.splice(qIdx, 1);
+    }
+    this.processOutgoingConnectQueue();
 
     const transport = this.activeTransports.get(endpointId);
     if (transport) {
@@ -841,6 +903,8 @@ export class NearbyMeshController {
     }
     this.clearAllConnectionTimeouts();
     this.pendingConnections.clear();
+    this.outgoingConnectQueue = [];
+    this.isOutgoingHandshakeInProgress = false;
 
     for (const transport of Array.from(this.activeTransports.values())) {
       try {

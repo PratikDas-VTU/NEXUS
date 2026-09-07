@@ -8,8 +8,15 @@ import type { IncidentPriority, IncidentStatus, IncidentType } from './types.ts'
 /** Protocol wire version */
 export const PROTOCOL_VERSION = '1.0.0';
 
-/** Maximum peer-to-peer relay hops before dropping/halting forwarding */
-export const MAX_HOPS = 3;
+/**
+ * Default message hop budget for loop safety and broadcast attenuation.
+ *
+ * NOTE: This is a per-message forwarding safety budget, NOT a limit on
+ * the total number of nodes in the NEXUS network. The NEXUS logical network
+ * supports arbitrary numbers of nodes (3, 4, 5, 10, 20+).
+ */
+export const DEFAULT_MAX_HOPS = 3;
+export const MAX_HOPS = DEFAULT_MAX_HOPS;
 
 /** Default incident Time-To-Live: 24 hours in milliseconds */
 export const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 86,400,000 ms
@@ -94,9 +101,10 @@ export function isIncidentExpired(timestamp: number, ttl: number, now: number = 
  */
 export function isEligibleForForwarding(
   incident: { hopCount: number; timestamp: number; ttl: number; status: IncidentStatus },
-  now: number = Date.now()
+  now: number = Date.now(),
+  maxHops: number = MAX_HOPS
 ): boolean {
-  if (incident.hopCount >= MAX_HOPS) return false;
+  if (incident.hopCount >= maxHops) return false;
   if (incident.status === 'resolved' || incident.status === 'expired') return false;
   if (isIncidentExpired(incident.timestamp, incident.ttl, now)) return false;
   return true;
