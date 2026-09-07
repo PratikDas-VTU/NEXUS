@@ -8,7 +8,23 @@
     "signaler": "node networking/signaler.js",
     "test:relay": "node --experimental-strip-types networking/test/relay.test.ts",
     "test:signaler": "node --experimental-strip-types networking/test/signaler.test.ts",
-    "test": "node --experimental-strip-types networking/test/relay.test.ts && node --experimental-strip-types networking/test/signaler.test.ts"
+    "test:data": "vitest run",
+    "test": "node --experimental-strip-types networking/test/relay.test.ts && node --experimental-strip-types networking/test/signaler.test.ts",
+    "test:all": "npm run test && vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dexie": "^4.4.5",
+    "dexie-react-hooks": "^4.4.0",
+    "uuid": "^14.0.2",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/uuid": "^10.0.0",
+    "fake-indexeddb": "^6.2.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
   },
   "keywords": [
     "offline-first",
