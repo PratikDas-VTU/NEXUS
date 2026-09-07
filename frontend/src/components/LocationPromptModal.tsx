@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { MapPin, Navigation, ShieldCheck, AlertTriangle, Check, RefreshCw, ExternalLink } from 'lucide-react';
-import { GeolocationCoordinates, LocationState, formatCoordinates, isInsecureLanOrigin } from '../services/api/geolocation';
+import { GeolocationCoordinates, LocationState, formatCoordinates, isInsecureLanOrigin, getCampusFallbackPosition } from '../services/api/geolocation';
 
 interface LocationPromptModalProps {
   isOpen: boolean;
@@ -23,8 +23,8 @@ export const LocationPromptModal: React.FC<LocationPromptModalProps> = ({
 }) => {
   const [isRequesting, setIsRequesting] = useState(false);
   const [manualMode, setManualMode] = useState(false);
-  const [manualLat, setManualLat] = useState('12.9716');
-  const [manualLng, setManualLng] = useState('77.5946');
+  const [manualLat, setManualLat] = useState('13.2384');
+  const [manualLng, setManualLng] = useState('80.0094');
 
   if (!isOpen) return null;
 
@@ -39,10 +39,16 @@ export const LocationPromptModal: React.FC<LocationPromptModalProps> = ({
     }
   };
 
+  const handleSetCampusFix = () => {
+    const campusPos = getCampusFallbackPosition();
+    onSetManualLocation(campusPos.latitude, campusPos.longitude);
+    onClose();
+  };
+
   const handleSaveManual = (e: React.FormEvent) => {
     e.preventDefault();
-    const lat = parseFloat(manualLat) || 12.9716;
-    const lng = parseFloat(manualLng) || 77.5946;
+    const lat = parseFloat(manualLat) || 13.2384;
+    const lng = parseFloat(manualLng) || 80.0094;
     onSetManualLocation(lat, lng);
     onClose();
   };
@@ -189,6 +195,15 @@ export const LocationPromptModal: React.FC<LocationPromptModalProps> = ({
             </button>
           ) : (
             <>
+              <button
+                type="button"
+                onClick={handleSetCampusFix}
+                className="w-full py-2.5 rounded-2xl bg-[#002957] hover:bg-[#003875] border border-[#3e90ff] text-[#aac7ff] font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all shadow-md"
+              >
+                <span>📍</span>
+                <span>1-Tap Set Campus GPS Fix (Amrita Hub)</span>
+              </button>
+
               <button
                 type="button"
                 onClick={handleAllowGps}

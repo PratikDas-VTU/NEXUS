@@ -15,12 +15,14 @@ export function getSignalingUrl(): string {
   }
 
   // 2. Dynamic host detection for local phone / LAN demonstration
-  // If user opens the app from a phone at http://192.168.x.x:3000,
-  // this automatically routes signaling to ws://192.168.x.x:8080.
+  // If running on HTTPS, route through Vite's secure WebSocket proxy on /ws (port 3000)
+  // to eliminate mixed-content blocking in mobile Chrome!
   if (typeof window !== 'undefined' && window.location?.hostname) {
+    if (window.location.protocol === 'https:') {
+      return `wss://${window.location.host}/ws`;
+    }
     const host = window.location.hostname;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${host}:8080`;
+    return `ws://${host}:8080`;
   }
 
   // 3. Safe fallback for server/test environments

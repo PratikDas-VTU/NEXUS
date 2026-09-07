@@ -243,12 +243,28 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setPermissions(status);
   }, []);
 
-  // Initial permissions check & storage persistence request
+  // Initial permissions check, storage persistence & immediate location hydration
   useEffect(() => {
+    // 1. Immediately hydrate cached or campus fallback coordinates so phone is never coordinate-blind!
+    const initialPos = getCachedPosition(true);
+    if (initialPos) {
+      setCurrentLocation(initialPos);
+      setLocationState(initialPos.isManual ? 'MANUAL' : 'CACHED');
+    }
+
     refreshPermissions();
     requestStoragePersistence().then(() => {
       refreshPermissions();
     });
+
+    // 2. Attempt real live GPS fix in background
+    getCurrentPosition({ enableHighAccuracy: true, timeout: 6000 }).then((res) => {
+      if (res.success && res.coords) {
+        setCurrentLocation(res.coords);
+        setLocationState('LIVE');
+        setLocationError(null);
+      }
+    }).catch(() => {});
   }, [refreshPermissions]);
 
   // Location request handler
@@ -258,7 +274,7 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     const result = await getCurrentPosition({
       enableHighAccuracy: true,
-      timeout: 12000,
+      timeout: 10000,
       maximumAge: 5000,
     });
 
@@ -269,11 +285,11 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       refreshPermissions();
       return result;
     } else {
-      // Fall back to cached if available
-      const cached = getCachedPosition();
+      // Fall back to cached or campus tactical fix so the device always has coordinates
+      const cached = getCachedPosition(true);
       if (cached) {
         setCurrentLocation(cached);
-        setLocationState('CACHED');
+        setLocationState(cached.isManual ? 'MANUAL' : 'CACHED');
       } else {
         if (result.errorCode === 'PERMISSION_DENIED') {
           setLocationState('DENIED');
@@ -281,7 +297,7 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
           setLocationState('UNAVAILABLE');
         }
       }
-      setLocationError(result.error || 'Failed to acquire GPS fix.');
+      setLocationError(result.error || 'Failed to acquire satellite GPS fix.');
       refreshPermissions();
       return result;
     }

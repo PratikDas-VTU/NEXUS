@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { MapPin, RefreshCw, X, AlertTriangle, ShieldCheck, ExternalLink, Edit3, Check } from 'lucide-react';
-import { GeolocationCoordinates, LocationState, formatCoordinates, isInsecureLanOrigin } from '../services/api/geolocation';
+import { GeolocationCoordinates, LocationState, formatCoordinates, isInsecureLanOrigin, getCampusFallbackPosition } from '../services/api/geolocation';
+import { CAMPUS_LANDMARKS } from '../services/api/geminiService';
 
 interface LocationDetailsModalProps {
   isOpen: boolean;
@@ -23,8 +24,8 @@ export const LocationDetailsModal: React.FC<LocationDetailsModalProps> = ({
 }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isEditingManual, setIsEditingManual] = useState(false);
-  const [manualLat, setManualLat] = useState(location ? location.latitude.toString() : '12.9716');
-  const [manualLng, setManualLng] = useState(location ? location.longitude.toString() : '77.5946');
+  const [manualLat, setManualLat] = useState(location ? location.latitude.toString() : '13.2384');
+  const [manualLng, setManualLng] = useState(location ? location.longitude.toString() : '80.0094');
   const [inputError, setInputError] = useState('');
 
   if (!isOpen) return null;
@@ -56,6 +57,12 @@ export const LocationDetailsModal: React.FC<LocationDetailsModalProps> = ({
     }
 
     onSetManualLocation(lat, lng);
+    setIsEditingManual(false);
+  };
+
+  const handleSetCampusFix = () => {
+    const campusPos = getCampusFallbackPosition();
+    onSetManualLocation(campusPos.latitude, campusPos.longitude);
     setIsEditingManual(false);
   };
 
@@ -221,6 +228,36 @@ export const LocationDetailsModal: React.FC<LocationDetailsModalProps> = ({
             </div>
           </form>
         ) : null}
+
+        {/* 1-Tap Campus Base Fix */}
+        <button
+          type="button"
+          onClick={handleSetCampusFix}
+          className="w-full py-2.5 rounded-2xl bg-[#002957] hover:bg-[#003875] border border-[#3e90ff] text-[#aac7ff] font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all shadow-md"
+        >
+          <span className="text-[14px]">📍</span>
+          <span>1-Tap Calibrate Campus GPS Fix (Amrita Hub)</span>
+        </button>
+
+        {/* Quick Campus Landmark Presets */}
+        <div className="flex flex-col gap-1 p-2.5 rounded-2xl bg-[#131313] border border-[#2a2a2a]">
+          <span className="text-[10px] text-[#8b91a0] font-semibold">Campus Tactical Presets:</span>
+          <div className="flex flex-wrap gap-1">
+            {Object.entries(CAMPUS_LANDMARKS).map(([key, lm]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => {
+                  onSetManualLocation(lm.lat, lm.lng);
+                  setIsEditingManual(false);
+                }}
+                className="text-[9.5px] px-2 py-0.5 rounded-lg bg-[#1c1b1b] hover:bg-[#282828] text-[#aac7ff] border border-[#2d2d38] cursor-pointer active:scale-95"
+              >
+                {lm.label.split(' ')[0]} {lm.label.split(' ')[1] || ''}
+              </button>
+            ))}
+          </div>
+        </div>
 
         {/* Action Buttons */}
         <div className="flex gap-2">
