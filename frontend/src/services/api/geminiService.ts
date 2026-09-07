@@ -7,7 +7,7 @@
  * 3. Graceful offline fallback when Internet connectivity is unavailable
  */
 
-import { IncidentType, IncidentPriority } from '../../types';
+import type { IncidentType, IncidentPriority } from '../../../../shared/types';
 
 // Retrieve Gemini API Key from environment or local cache
 export function getGeminiApiKey(): string {

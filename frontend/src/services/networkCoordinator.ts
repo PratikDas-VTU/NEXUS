@@ -6,12 +6,17 @@ import type { TransportType } from '../../../shared/interfaces';
 import type { INexusTransportProvider } from '../../../networking/transportProvider';
 import { WebRtcTransportProvider } from '../../../networking/webRtcTransportProvider';
 import { WebSocketTransportProvider } from '../../../networking/webSocketTransportProvider';
+import { NativeTransportProvider } from '../../../networking/nativeTransportProvider';
+import type { INativeMeshBridge } from '../../../networking/nativeBridge';
 import { MultiTransportManager, type TransportHealth } from '../../../networking/multiTransportManager';
 
 export interface NetworkCoordinatorOptions {
   deviceId: string;
   relayEngine: RelayEngine;
   signalingUrl?: string;
+  nativeBridge?: INativeMeshBridge;
+  nativeProvider?: NativeTransportProvider;
+  enableNativeTransport?: boolean;
 }
 
 export interface PeerConnectionDiagnostic {
@@ -55,9 +60,10 @@ export class NetworkCoordinator {
   private fallbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private isStarted = false;
 
-  // Transport Providers & Multi-Transport Manager (Phase 2, 3, 4)
+  // Transport Providers & Multi-Transport Manager (Phase 2, 3, 4, 6)
   private webRtcProvider: WebRtcTransportProvider;
   private webSocketProvider: WebSocketTransportProvider;
+  private nativeProvider?: NativeTransportProvider;
   private providers: INexusTransportProvider[];
   private multiTransportManager: MultiTransportManager;
 
@@ -105,14 +111,37 @@ export class NetworkCoordinator {
 
     // Initialize WebSocket fallback transport provider
     this.webSocketProvider = new WebSocketTransportProvider();
+
+    // Initialize Native transport provider if configured or available
+    if (options.nativeProvider) {
+      this.nativeProvider = options.nativeProvider;
+    } else if (options.nativeBridge || options.enableNativeTransport) {
+      this.nativeProvider = new NativeTransportProvider({
+        localDeviceId: this.deviceId,
+        bridge: options.nativeBridge,
+        onLog: (level, msg) => this.log(level, msg),
+        onPeerDiscovered: (peerId) => {
+          this.log('info', `[Native] Nearby peer discovered: ${peerId}`);
+          this.notifyDiagnostics();
+        },
+        onPeerLost: (peerId) => {
+          this.log('info', `[Native] Nearby peer lost: ${peerId}`);
+          this.notifyDiagnostics();
+        },
+        onStateChange: () => {
+          this.notifyDiagnostics();
+        },
+      });
+    }
+
     this.providers = [this.webRtcProvider, this.webSocketProvider];
+    if (this.nativeProvider) {
+      this.providers.push(this.nativeProvider);
+    }
 
     // Route transport-ready events from any provider into MultiTransportManager and RelayEngine
     for (const provider of this.providers) {
-      provider.onTransportReady((transport) => {
-        this.multiTransportManager.registerTransport(transport);
-        this.relayEngine.registerTransport(transport);
-      });
+      this.bindProvider(provider);
     }
 
     this.log('info', `Coordinator initialized for device ${this.deviceId}`);
@@ -121,6 +150,30 @@ export class NetworkCoordinator {
       this.log('warn', `Received PURGE over transport from ${fromPeerId}: ${reason || 'no reason'}`);
       this.notifyPurgeAll(reason);
     };
+  }
+
+  private bindProvider(provider: INexusTransportProvider): void {
+    provider.onTransportReady((transport) => {
+      this.multiTransportManager.registerTransport(transport);
+      this.relayEngine.registerTransport(transport);
+    });
+  }
+
+  public registerProvider(provider: INexusTransportProvider): void {
+    if (this.providers.some((p) => p.id === provider.id)) return;
+    this.providers.push(provider);
+    if (provider.id === 'nearby' && provider instanceof NativeTransportProvider) {
+      this.nativeProvider = provider;
+    }
+    this.bindProvider(provider);
+    if (this.isStarted) {
+      provider.start();
+    }
+    this.notifyDiagnostics();
+  }
+
+  public getNativeProvider(): NativeTransportProvider | undefined {
+    return this.nativeProvider;
   }
 
   public getMultiTransportManager(): MultiTransportManager {
@@ -140,6 +193,7 @@ export class NetworkCoordinator {
     this.log('info', `Updating device ID from ${this.deviceId} to ${newDeviceId}`);
     this.deviceId = newDeviceId;
     this.webRtcProvider.setLocalDeviceId(newDeviceId);
+    this.nativeProvider?.setLocalDeviceId(newDeviceId);
 
     if (this.isStarted) {
       this.restart().catch((err) => {
@@ -387,7 +441,9 @@ export class NetworkCoordinator {
       const health = this.multiTransportManager.getAllHealth(peerId);
 
       let transportType: TransportType | 'none' = 'none';
-      if (rtcDiag && rtcDiag.isOpen) {
+      if (preferred && preferred.isOpen()) {
+        transportType = preferred.transportType;
+      } else if (rtcDiag && rtcDiag.isOpen) {
         transportType = 'webrtc';
       } else if (wsTransport && wsTransport.isOpen()) {
         transportType = 'websocket';

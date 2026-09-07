@@ -20,7 +20,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   return (
     <nav
       id="nexus-bottom-nav"
-      className="sticky bottom-0 w-full z-40 shrink-0 bg-[#131313]/95 backdrop-blur-xl shadow-[0_-1px_12px_rgba(0,0,0,0.5)] border-t border-[#201f1f]/80"
+      className="sticky bottom-0 w-full z-40 shrink-0 bg-[#131313]/95 backdrop-blur-xl shadow-[0_-1px_12px_rgba(0,0,0,0.5)] border-t border-[#201f1f]/80 pb-safe-bottom"
     >
       <div className="flex justify-around items-center h-14 px-2 max-w-md md:max-w-xl mx-auto">
         {navItems.map((item) => {

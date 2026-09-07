@@ -63,6 +63,29 @@
   }
 }
 
+/* Safe Area Insets for Mobile & Native Viewports */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+}
+
+.pt-safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.pb-safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* When running inside native mobile shell (Capacitor Android / iOS) */
+.capacitor-native .pt-safe-top {
+  padding-top: max(env(safe-area-inset-top, 0px), 2.25rem);
+}
+
+.capacitor-native .pb-safe-bottom {
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 0.75rem);
+}
+
 /* Material Symbols configuration */
 .material-symbols-outlined {
   font-family: 'Material Symbols Outlined';

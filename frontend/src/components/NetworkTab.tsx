@@ -3,6 +3,7 @@ import { MeshPeer } from '../types';
 import { meshPeers } from '../data/mockData';
 import type { RelayNetworkStatus } from '../../../shared/interfaces';
 import { useNexusServices } from '../context/ServiceContext';
+import { useNearbyMesh, type NearbyNode } from '../hooks/useNearbyMesh';
 
 interface NetworkTabProps {
   onShowToast: (msg: string) => void;
@@ -22,24 +23,24 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
     networkDiagnostics,
     reconnectSignaler,
     deviceId,
+    createIncident,
   } = useNexusServices();
 
   const networkStatus = propNetworkStatus || ctxNetworkStatus;
   const [peers] = useState<MeshPeer[]>(meshPeers);
-  const [isAutoScanning, setIsAutoScanning] = useState<boolean>(true);
-  const [backgroundDiscovery, setBackgroundDiscovery] = useState<boolean>(true);
   const [highlightedPeerId, setHighlightedPeerId] = useState<string | null>(null);
-  const [showLiveConsole, setShowLiveConsole] = useState<boolean>(true);
+  const [showLiveConsole, setShowLiveConsole] = useState<boolean>(false);
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
+  const [showSimulatedReference, setShowSimulatedReference] = useState<boolean>(false);
+
+  // Real Android Nearby Connections hook
+  const nearby = useNearbyMesh({
+    localDeviceId: deviceId,
+    onToast: onShowToast,
+  });
 
   const realPeerCount = networkStatus?.activePeers?.length ?? 0;
   const isSignalingConnected = networkDiagnostics.signalingState === 'CONNECTED';
-
-  const handleToggleAutoScan = () => {
-    const next = !isAutoScanning;
-    setIsAutoScanning(next);
-    onShowToast(next ? 'Mesh radio scanning enabled' : 'Mesh radio scanning paused');
-  };
 
   const handleManualReconnect = async () => {
     setIsReconnecting(true);
@@ -52,12 +53,28 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
     }
   };
 
-  const handleSelectPeer = (peer: MeshPeer) => {
+  const handleSelectSimulatedPeer = (peer: MeshPeer) => {
     setHighlightedPeerId(peer.id);
-    onShowToast(`Pinging ${peer.name} (${peer.distance}) via BLE mesh`);
+    onShowToast(`Simulated demo ping: ${peer.name} (Demo reference only)`);
     setTimeout(() => {
       setHighlightedPeerId(null);
-    }, 2500);
+    }, 2000);
+  };
+
+  const handleSendTestNearbyIncident = async (node: NearbyNode) => {
+    try {
+      await createIncident({
+        type: 'safety',
+        priority: 'P1',
+        latitude: 13.2384,
+        longitude: 80.0094,
+        peopleAffected: 1,
+        description: `Nearby test ping from ${deviceId.slice(0, 8)} to ${node.endpointName} (${node.endpointId})`,
+      });
+      onShowToast(`Dispatched test incident via RelayEngine to ${node.endpointName}`);
+    } catch (err: any) {
+      onShowToast(`Failed to dispatch test incident: ${err?.message}`);
+    }
   };
 
   const renderSignalBars = (filledCount: number) => {
@@ -82,222 +99,447 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
 
   return (
     <div className="flex-1 min-h-0 w-full flex flex-col px-4 pt-3 pb-8 gap-4 overflow-y-auto no-scrollbar">
-      {/* Top Intro Bar */}
+      {/* ─── HEADER BAR ──────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between pt-1 shrink-0">
         <div className="flex flex-col">
-          <h1 className="text-[20px] font-bold text-[#e5e2e1] tracking-tight">Nearby Mesh</h1>
-          <p className="text-[13px] text-[#c0c6d6]">
-            {realPeerCount === 0
-              ? '0 peers connected · Standby for local WebRTC mesh'
-              : `${realPeerCount} peer${realPeerCount > 1 ? 's' : ''} connected via WebRTC & Local Mesh`}
+          <h1 className="text-[20px] font-bold text-[#e5e2e1] tracking-tight">Nearby Mesh Network</h1>
+          <p className="text-[12px] text-[#c0c6d6]">
+            {nearby.connectedCount > 0
+              ? `${nearby.connectedCount} Physical Nearby Node${nearby.connectedCount > 1 ? 's' : ''} Connected`
+              : nearby.isScanning
+              ? `Scanning Nearby radio · ${nearby.discoveredCount} detected`
+              : 'Standby · Ready for physical Android discovery'}
           </p>
         </div>
-        <button
-          onClick={handleToggleAutoScan}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
-            isAutoScanning
-              ? 'bg-[#201f1f] text-[#aac7ff] border-[#3e90ff]/40'
-              : 'bg-[#1c1b1b] text-[#8b91a0] border-[#2a2a2a]'
-          }`}
-        >
-          <span
-            className={`material-symbols-outlined text-[16px] ${
-              isAutoScanning ? 'animate-spin' : ''
-            }`}
-            style={{ animationDuration: '3s' }}
-          >
-            autorenew
-          </span>
-          <span className="text-[11px] font-medium tracking-tight">
-            {isAutoScanning ? 'Scanning' : 'Paused'}
-          </span>
-        </button>
       </div>
 
-      {/* ─── REAL RUNTIME MESH DIAGNOSTICS HERO CARD ──────────────────────────── */}
+      {/* ─── SECTION 1: REAL NEARBY CONNECTIONS HERO CONTROL ───────────────────── */}
       <div className="p-4 rounded-3xl bg-[#181818] border border-[#2e2e2e] shadow-xl flex flex-col gap-3.5 shrink-0">
+        {/* Title & Radio Badge */}
         <div className="flex items-center justify-between border-b border-[#262626] pb-3">
           <div className="flex items-center gap-2">
             <span className="material-symbols-outlined text-[20px] text-[#3e90ff]">
-              wifi_tethering
+              nearby
             </span>
-            <span className="text-[14px] font-bold text-[#e5e2e1] tracking-tight">
-              Local Hardware Radio & Signaling
-            </span>
+            <div className="flex flex-col">
+              <span className="text-[14px] font-bold text-[#e5e2e1] tracking-tight leading-tight">
+                Real Android Nearby Connections
+              </span>
+              <span className="text-[10.5px] text-[#8b91a0] font-mono leading-tight">
+                Google Play Services · P2P Cluster · nexus-mesh-v1
+              </span>
+            </div>
           </div>
+
           <span
             className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1.5 ${
-              isSignalingConnected
+              nearby.isScanning
                 ? 'bg-[#142e1d] text-[#47e266] border border-[#2f6f3a]'
-                : networkDiagnostics.signalingState === 'CONNECTING'
+                : nearby.preflightState === 'READY'
                 ? 'bg-[#1b253b] text-[#aac7ff] border border-[#2d4370]'
-                : 'bg-[#331818] text-[#ffb4ab] border border-[#6b2c2c]'
+                : nearby.preflightState === 'PERMISSIONS_MISSING'
+                ? 'bg-[#332512] text-[#ffb84e] border border-[#7a531b]'
+                : 'bg-[#222] text-[#8b91a0] border border-[#333]'
             }`}
           >
             <span
               className={`w-1.5 h-1.5 rounded-full ${
-                isSignalingConnected
+                nearby.isScanning
                   ? 'bg-[#47e266] animate-pulse'
-                  : networkDiagnostics.signalingState === 'CONNECTING'
-                  ? 'bg-[#aac7ff] animate-ping'
-                  : 'bg-[#ffb4ab]'
+                  : nearby.preflightState === 'READY'
+                  ? 'bg-[#aac7ff]'
+                  : nearby.preflightState === 'PERMISSIONS_MISSING'
+                  ? 'bg-[#ffb84e] animate-ping'
+                  : 'bg-[#8b91a0]'
               }`}
             />
+            {nearby.isScanning
+              ? 'SCANNING'
+              : nearby.preflightState === 'READY'
+              ? 'READY'
+              : nearby.preflightState === 'PERMISSIONS_MISSING'
+              ? 'PERM REQ'
+              : nearby.preflightState}
+          </span>
+        </div>
+
+        {/* ─── PROMINENT SCAN NEARBY CONTROL BUTTON ─── */}
+        <div className="flex flex-col gap-2">
+          <button
+            id="nexus-btn-scan-nearby"
+            onClick={nearby.isScanning ? nearby.stopScan : nearby.startScan}
+            disabled={nearby.isStarting || nearby.isStopping}
+            className={`w-full py-3 px-4 rounded-2xl font-bold text-sm flex items-center justify-center gap-2.5 shadow-lg transition-all active:scale-[0.98] cursor-pointer ${
+              nearby.isScanning
+                ? 'bg-[#93000a]/30 hover:bg-[#93000a]/50 text-[#ffb4ab] border border-[#ffb4ab]/40 shadow-red-950/30'
+                : 'bg-[#3e90ff] hover:bg-[#3478d4] text-white shadow-blue-900/40'
+            }`}
+          >
+            <span
+              className={`material-symbols-outlined text-[20px] ${
+                nearby.isScanning || nearby.isStarting ? 'animate-spin' : ''
+              }`}
+            >
+              {nearby.isScanning ? 'stop_circle' : nearby.isStarting ? 'sync' : 'radar'}
+            </span>
+            <span>
+              {nearby.isStarting
+                ? 'STARTING SCAN...'
+                : nearby.isStopping
+                ? 'STOPPING SCAN...'
+                : nearby.isScanning
+                ? 'STOP SCAN (SCANNING ACTIVE)'
+                : 'SCAN NEARBY (DISCOVER & BROADCAST)'}
+            </span>
+          </button>
+        </div>
+
+        {/* Real Radio Telemetry Grid */}
+        <div className="grid grid-cols-3 gap-2 text-xs font-mono">
+          <div className="p-2 rounded-xl bg-[#121212] border border-[#262626] flex flex-col items-center justify-center text-center">
+            <span className="text-[9.5px] text-[#8b91a0] uppercase font-sans">Advertising</span>
+            <span className={`text-[11px] font-bold mt-0.5 ${nearby.advertising ? 'text-[#47e266]' : 'text-[#8b91a0]'}`}>
+              {nearby.advertising ? '● ON' : '○ OFF'}
+            </span>
+          </div>
+
+          <div className="p-2 rounded-xl bg-[#121212] border border-[#262626] flex flex-col items-center justify-center text-center">
+            <span className="text-[9.5px] text-[#8b91a0] uppercase font-sans">Discovery</span>
+            <span className={`text-[11px] font-bold mt-0.5 ${nearby.discovery ? 'text-[#47e266]' : 'text-[#8b91a0]'}`}>
+              {nearby.discovery ? '● ON' : '○ OFF'}
+            </span>
+          </div>
+
+          <div className="p-2 rounded-xl bg-[#121212] border border-[#262626] flex flex-col items-center justify-center text-center">
+            <span className="text-[9.5px] text-[#8b91a0] uppercase font-sans">Nearby Link</span>
+            <span className={`text-[11px] font-bold mt-0.5 ${nearby.connectedCount > 0 ? 'text-[#47e266]' : 'text-[#8b91a0]'}`}>
+              {nearby.connectedCount > 0 ? `${nearby.connectedCount} Connected` : `${nearby.discoveredCount} Found`}
+            </span>
+          </div>
+        </div>
+
+        {/* ─── PRE-FLIGHT DIAGNOSTICS & PERMISSION CARDS ─── */}
+        {nearby.preflightState === 'PERMISSIONS_MISSING' && (
+          <div className="p-3.5 rounded-2xl bg-[#291e12] border border-[#6b471c] flex flex-col gap-2 animate-in fade-in">
+            <div className="flex items-center gap-2 text-[#ffb84e]">
+              <span className="material-symbols-outlined text-[18px]">verified_user</span>
+              <span className="font-bold text-[12px]">Android Nearby Permissions Required</span>
+            </div>
+            <p className="text-[11.5px] text-[#e5e2e1] leading-relaxed">
+              NEXUS requires Android Nearby Devices permissions (Bluetooth & Local Wi-Fi) to discover and connect with companion phones without Internet.
+            </p>
+            <button
+              onClick={nearby.requestPermissions}
+              className="self-start px-3.5 py-1.5 rounded-xl bg-[#ffb84e] text-[#291e12] font-bold text-xs hover:brightness-110 active:scale-95 cursor-pointer shadow-sm"
+            >
+              Allow Nearby Access
+            </button>
+          </div>
+        )}
+
+        {nearby.preflightState === 'BLUETOOTH_UNSUPPORTED' && (
+          <div className="p-3 rounded-2xl bg-[#2e1818] border border-[#6b2c2c] flex items-start gap-2.5">
+            <span className="material-symbols-outlined text-[18px] text-[#ffb4ab] shrink-0 mt-0.5">bluetooth_disabled</span>
+            <div className="flex flex-col">
+              <span className="text-xs font-bold text-[#ffb4ab]">Bluetooth Radio Unavailable</span>
+              <p className="text-[11px] text-[#c0c6d6] leading-relaxed mt-0.5">
+                Bluetooth hardware is required for Nearby Connections. Please ensure Bluetooth is enabled in your device settings.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {nearby.preflightState === 'BROWSER_UNSUPPORTED' && (
+          <div className="p-3 rounded-2xl bg-[#161c28] border border-[#2b4162] flex items-start gap-2.5">
+            <span className="material-symbols-outlined text-[18px] text-[#aac7ff] shrink-0 mt-0.5">devices</span>
+            <div className="flex flex-col">
+              <span className="text-xs font-bold text-[#aac7ff]">Browser Environment (Fallback Mesh Active)</span>
+              <p className="text-[11px] text-[#c0c6d6] leading-relaxed mt-0.5">
+                Google Nearby Connections radio runs natively on Android APK. Standard web browsers operate using WebRTC P2P and local signaling shown below.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {nearby.errorMessage &&
+          nearby.preflightState !== 'PERMISSIONS_MISSING' &&
+          nearby.preflightState !== 'BLUETOOTH_UNSUPPORTED' &&
+          nearby.preflightState !== 'BROWSER_UNSUPPORTED' && (
+            <div className="p-3 rounded-2xl bg-[#2e1818] border border-[#6b2c2c] flex items-start gap-2.5">
+              <span className="material-symbols-outlined text-[18px] text-[#ffb4ab] shrink-0 mt-0.5">
+                error
+              </span>
+              <div className="flex flex-col">
+                <span className="text-xs font-bold text-[#ffb4ab]">Nearby Radio Error</span>
+                <p className="text-[11px] text-[#c0c6d6] leading-relaxed mt-0.5 font-mono">
+                  {nearby.errorMessage}
+                </p>
+              </div>
+            </div>
+          )}
+      </div>
+
+      {/* ─── SECTION 2: REAL NEARBY NODES LIST ─────────────────────────────────── */}
+      <div className="flex flex-col gap-2.5 shrink-0">
+        <div className="flex items-center justify-between px-1">
+          <div className="flex items-center gap-2">
+            <h2 className="text-[15px] font-bold text-[#e5e2e1] tracking-tight">
+              Real Nearby NEXUS Nodes
+            </h2>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#1f293d] text-[#aac7ff] border border-[#2d4370]">
+              {nearby.nodes.length}
+            </span>
+          </div>
+          <span className="text-[10.5px] text-[#47e266] font-mono">
+            {nearby.isScanning ? '● Listening' : '○ Standby'}
+          </span>
+        </div>
+
+        {nearby.nodes.length === 0 ? (
+          <div className="p-5 rounded-2xl bg-[#181818] border border-[#2a2a2a] text-center flex flex-col items-center justify-center gap-2">
+            <span className="material-symbols-outlined text-[28px] text-[#8b91a0]">
+              {nearby.isScanning ? 'cell_tower' : 'search_off'}
+            </span>
+            <span className="text-[13px] font-semibold text-[#e5e2e1]">
+              {nearby.isScanning ? 'Scanning for companion NEXUS nodes...' : 'No Nearby Nodes Discovered'}
+            </span>
+            <p className="text-[11px] text-[#8b91a0] max-w-xs leading-relaxed">
+              {nearby.isScanning
+                ? 'Bring Phone B nearby with NEXUS open and "Scan Nearby" enabled to detect and connect over radio.'
+                : 'Press "Scan Nearby" above to start radio discovery.'}
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {nearby.nodes.map((node) => {
+              const isConnected = node.status === 'CONNECTED';
+              const isConnecting = node.status === 'CONNECTING';
+
+              return (
+                <div
+                  key={node.endpointId}
+                  className={`p-3.5 rounded-2xl bg-[#181818] border transition-all flex flex-col gap-2.5 ${
+                    isConnected
+                      ? 'border-[#2f6f3a] bg-[#122317]/50 shadow-[0_0_15px_rgba(71,226,102,0.1)]'
+                      : isConnecting
+                      ? 'border-[#3e90ff]/50 bg-[#161c28]/50'
+                      : 'border-[#2a2a2a]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        className={`w-9 h-9 rounded-xl flex items-center justify-center ${
+                          isConnected
+                            ? 'bg-[#142e1d] text-[#47e266] border border-[#2f6f3a]'
+                            : isConnecting
+                            ? 'bg-[#1b253b] text-[#aac7ff] border border-[#2d4370]'
+                            : 'bg-[#201f1f] text-[#ffb84e] border border-[#3a3020]'
+                        }`}
+                      >
+                        <span className="material-symbols-outlined text-[18px]">
+                          {isConnected ? 'hub' : isConnecting ? 'sync' : 'cell_tower'}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-col">
+                        <span className="text-[14px] font-bold text-[#e5e2e1] leading-tight">
+                          {node.endpointName}
+                        </span>
+                        <span className="text-[10px] font-mono text-[#8b91a0] leading-tight mt-0.5">
+                          ID: {node.endpointId} · {node.serviceId}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Node Status Badge */}
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                        isConnected
+                          ? 'bg-[#142e1d] text-[#47e266] border border-[#2f6f3a]'
+                          : isConnecting
+                          ? 'bg-[#1b253b] text-[#aac7ff] border border-[#2d4370] animate-pulse'
+                          : node.status === 'DISCONNECTED'
+                          ? 'bg-[#222] text-[#8b91a0] border border-[#333]'
+                          : 'bg-[#2b1f14] text-[#ffb84e] border border-[#554019]'
+                      }`}
+                    >
+                      {node.status}
+                    </span>
+                  </div>
+
+                  {/* Actions & Connection Info */}
+                  <div className="flex items-center justify-between pt-1 border-t border-[#222] text-xs">
+                    <span className="text-[10px] text-[#8b91a0] font-mono">
+                      {isConnected
+                        ? 'Transport: Nearby P2P Cluster'
+                        : `Last seen: ${new Date(node.lastSeenAt).toLocaleTimeString()}`}
+                    </span>
+
+                    <div className="flex items-center gap-1.5">
+                      {isConnected ? (
+                        <>
+                          <button
+                            onClick={() => handleSendTestNearbyIncident(node)}
+                            className="px-2.5 py-1 rounded-lg bg-[#1a2d1d] hover:bg-[#233d27] border border-[#2f6f3a] text-[#47e266] text-[10.5px] font-bold cursor-pointer transition-all"
+                            title="Send test emergency incident through RelayEngine"
+                          >
+                            Send Test Ping
+                          </button>
+                          <button
+                            onClick={() => nearby.disconnect(node.endpointId)}
+                            className="px-2.5 py-1 rounded-lg bg-[#291715] hover:bg-[#381f1b] border border-[#5e2b24] text-[#ffb4ab] text-[10.5px] font-medium cursor-pointer transition-all"
+                          >
+                            Disconnect
+                          </button>
+                        </>
+                      ) : isConnecting ? (
+                        <span className="text-[11px] text-[#aac7ff] font-medium animate-pulse">
+                          Connecting...
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => nearby.connect(node.endpointId)}
+                          className="px-3 py-1 rounded-lg bg-[#3e90ff] hover:bg-[#3478d4] text-white text-[11px] font-bold cursor-pointer transition-all active:scale-95 shadow-xs"
+                        >
+                          Connect
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {node.connectionError && (
+                    <div className="text-[10px] text-[#ffb4ab] bg-[#291715]/60 p-1.5 rounded-lg border border-[#5e2b24]/50">
+                      Error: {node.connectionError}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ─── SECTION 3: REAL NEXUS TOPOLOGY VISUALIZATION ──────────────────────── */}
+      <div className="p-4 rounded-3xl bg-[#181818] border border-[#2e2e2e] shadow-xl flex flex-col gap-3 shrink-0">
+        <div className="flex items-center justify-between border-b border-[#262626] pb-2">
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-[18px] text-[#47e266]">
+              hub
+            </span>
+            <span className="text-[13px] font-bold text-[#e5e2e1]">
+              Real Nexus Topology
+            </span>
+          </div>
+          <span className="text-[10px] text-[#8b91a0] font-mono">
+            Hardware Radio State
+          </span>
+        </div>
+
+        {/* Real Dynamic Node Graph */}
+        <div className="min-h-[140px] rounded-2xl bg-[#101010] border border-[#222] p-4 flex flex-col items-center justify-center relative overflow-hidden">
+          {/* Center: YOU */}
+          <div className="flex flex-col items-center z-10">
+            <div className="w-10 h-10 rounded-full bg-[#00a73e] flex items-center justify-center shadow-[0_0_15px_#47e266] border-2 border-[#131313]">
+              <span className="material-symbols-outlined text-[20px] text-[#003910]">
+                radio_button_checked
+              </span>
+            </div>
+            <span className="text-[10.5px] font-bold text-[#e5e2e1] mt-1 bg-[#181818] px-2 py-0.5 rounded-full border border-[#2a2a2a]">
+              YOU ({deviceId.slice(0, 8)})
+            </span>
+          </div>
+
+          {/* Connected/Discovered Physical Nodes */}
+          {nearby.nodes.length === 0 ? (
+            <span className="text-[11px] text-[#666] font-mono mt-3">
+              No physical peers connected
+            </span>
+          ) : (
+            <div className="w-full flex flex-wrap items-center justify-around gap-3 mt-4 pt-3 border-t border-[#1c1c1c] z-10">
+              {nearby.nodes.map((node) => {
+                const isConn = node.status === 'CONNECTED';
+                return (
+                  <div key={node.endpointId} className="flex flex-col items-center">
+                    <div
+                      className={`w-7 h-7 rounded-full flex items-center justify-center border-2 ${
+                        isConn
+                          ? 'bg-[#142e1d] border-[#47e266] text-[#47e266]'
+                          : 'bg-[#201f1f] border-[#ffb84e] text-[#ffb84e]'
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[13px]">
+                        {isConn ? 'check' : 'sensors'}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono text-[#c0c6d6] mt-0.5 font-semibold">
+                      {node.endpointName}
+                    </span>
+                    <span className={`text-[9px] font-bold ${isConn ? 'text-[#47e266]' : 'text-[#ffb84e]'}`}>
+                      {isConn ? 'Nearby P2P' : node.status}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <p className="text-[10px] text-[#8b91a0] italic text-center">
+          Note: This topology reflects exclusively real hardware Nearby Connections events. Distances and hops are established via confirmed store-carry-forward relay handshakes.
+        </p>
+      </div>
+
+      {/* ─── SECTION 4: LOCAL WI-FI / WEBRTC SIGNALING (FALLBACK TRANSPORT) ────── */}
+      <div className="p-4 rounded-3xl bg-[#181818] border border-[#2e2e2e] shadow-xl flex flex-col gap-3 shrink-0">
+        <div className="flex items-center justify-between border-b border-[#262626] pb-2">
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-[18px] text-[#aac7ff]">
+              wifi_tethering
+            </span>
+            <span className="text-[13px] font-bold text-[#e5e2e1]">
+              Local LAN & WebRTC Fallback Transport
+            </span>
+          </div>
+
+          <span
+            className={`px-2 py-0.5 rounded-full text-[9.5px] font-bold flex items-center gap-1 ${
+              isSignalingConnected
+                ? 'bg-[#142e1d] text-[#47e266] border border-[#2f6f3a]'
+                : 'bg-[#331818] text-[#ffb4ab] border border-[#6b2c2c]'
+            }`}
+          >
             {networkDiagnostics.signalingState}
           </span>
         </div>
 
-        {/* Signaling Server URL & Device Node ID Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-          <div className="p-2.5 rounded-2xl bg-[#121212] border border-[#262626] flex flex-col gap-1">
-            <span className="text-[10px] text-[#8b91a0] uppercase font-semibold tracking-wider">
-              Local Signaler Endpoint
-            </span>
+        {/* Signaling Endpoint info */}
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="p-2 rounded-xl bg-[#121212] border border-[#262626] flex flex-col gap-0.5">
+            <span className="text-[9.5px] text-[#8b91a0] uppercase font-semibold">Signaler Endpoint</span>
             <div className="flex items-center justify-between gap-1">
-              <span className="font-mono text-[11px] text-[#aac7ff] truncate">
+              <span className="font-mono text-[10.5px] text-[#aac7ff] truncate">
                 {networkDiagnostics.signalingUrl}
               </span>
               <button
                 onClick={handleManualReconnect}
                 disabled={isReconnecting}
-                className="p-1 rounded-md bg-[#222] hover:bg-[#333] text-[#c0c6d6] cursor-pointer"
-                title="Reconnect Signaling"
+                className="p-0.5 rounded bg-[#222] hover:bg-[#333] text-[#c0c6d6] cursor-pointer"
+                title="Reconnect Signaler"
               >
-                <span className={`material-symbols-outlined text-[14px] ${isReconnecting ? 'animate-spin' : ''}`}>
+                <span className={`material-symbols-outlined text-[13px] ${isReconnecting ? 'animate-spin' : ''}`}>
                   refresh
                 </span>
               </button>
             </div>
           </div>
 
-          <div className="p-2.5 rounded-2xl bg-[#121212] border border-[#262626] flex flex-col gap-1">
-            <span className="text-[10px] text-[#8b91a0] uppercase font-semibold tracking-wider">
-              Your Local Node Identity
-            </span>
-            <div className="flex items-center justify-between gap-1">
-              <span className="font-mono text-[11px] text-[#e5e2e1] font-bold truncate">
-                {deviceId}
-              </span>
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(deviceId);
-                  onShowToast('Device ID copied to clipboard');
-                }}
-                className="p-1 rounded-md bg-[#222] hover:bg-[#333] text-[#c0c6d6] cursor-pointer"
-                title="Copy Device ID"
-              >
-                <span className="material-symbols-outlined text-[14px]">content_copy</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Discovered / Connected Real Peers on LAN */}
-        <div className="flex flex-col gap-2 pt-1">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-[#8b91a0] uppercase tracking-wider">
-              Real LAN Peers ({networkDiagnostics.discoveredPeers.length} Discovered · {realPeerCount} Active Transport)
+          <div className="p-2 rounded-xl bg-[#121212] border border-[#262626] flex flex-col gap-0.5">
+            <span className="text-[9.5px] text-[#8b91a0] uppercase font-semibold">Active Transports</span>
+            <span className="font-mono text-[10.5px] text-[#47e266] font-bold">
+              {networkDiagnostics.activeTransportsCount} Transport Channels
             </span>
           </div>
-
-          {networkDiagnostics.discoveredPeers.length === 0 ? (
-            <div className="p-3 rounded-2xl bg-[#121212] border border-[#262626] text-center flex flex-col items-center justify-center py-4">
-              <span className="material-symbols-outlined text-[20px] text-[#8b91a0] mb-1">
-                radar
-              </span>
-              <span className="text-[12px] text-[#c0c6d6] font-medium">
-                Searching local Wi-Fi for companion nodes...
-              </span>
-              <span className="text-[10px] text-[#8b91a0] mt-0.5">
-                Open <span className="font-mono text-[#aac7ff]">http://&lt;your-ip&gt;:3000</span> on another phone on this Wi-Fi
-              </span>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-2">
-              {networkDiagnostics.discoveredPeers.map((peer) => {
-                const diag = networkDiagnostics.peerDiagnostics.find((p) => p.peerId === peer.peerId);
-                const isRtcConnected = diag?.connectionState === 'connected';
-                const isDataChannelOpen = diag?.dataChannelState === 'open';
-                const hasActiveTransport = diag?.transportType && diag.transportType !== 'none';
-
-                return (
-                  <div
-                    key={peer.peerId}
-                    className="p-3 rounded-2xl bg-[#121212] border border-[#2a2a2a] flex flex-col gap-2"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={`w-2 h-2 rounded-full ${
-                            hasActiveTransport ? 'bg-[#47e266] animate-pulse' : 'bg-[#aac7ff]'
-                          }`}
-                        />
-                        <span className="font-mono text-[12px] font-bold text-[#e5e2e1]">
-                          {peer.peerId.length > 18 ? `${peer.peerId.slice(0, 16)}...` : peer.peerId}
-                        </span>
-                      </div>
-                      <span
-                        className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                          diag?.transportType === 'webrtc'
-                            ? 'bg-[#47e266]/15 text-[#47e266]'
-                            : diag?.transportType === 'websocket'
-                            ? 'bg-[#3e90ff]/15 text-[#aac7ff]'
-                            : 'bg-[#2a2a2a] text-[#8b91a0]'
-                        }`}
-                      >
-                        {diag?.transportType === 'webrtc'
-                          ? 'WebRTC P2P'
-                          : diag?.transportType === 'websocket'
-                          ? 'Hotspot Mesh'
-                          : 'Connecting...'}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono pt-1 border-t border-[#1c1c1c]">
-                      <div className="flex flex-col">
-                        <span className="text-[#8b91a0]">WebRTC</span>
-                        <span
-                          className={`font-semibold ${
-                            isRtcConnected
-                              ? 'text-[#47e266]'
-                              : diag?.connectionState === 'connecting'
-                              ? 'text-[#aac7ff]'
-                              : diag?.connectionState === 'failed'
-                              ? 'text-[#ffb4ab]'
-                              : 'text-[#8b91a0]'
-                          }`}
-                        >
-                          {diag?.connectionState || 'new'}
-                        </span>
-                      </div>
-
-                      <div className="flex flex-col">
-                        <span className="text-[#8b91a0]">Channel</span>
-                        <span
-                          className={`font-semibold ${
-                            isDataChannelOpen
-                              ? 'text-[#47e266]'
-                              : diag?.dataChannelState === 'connecting'
-                              ? 'text-[#ffb84e]'
-                              : 'text-[#8b91a0]'
-                          }`}
-                        >
-                          {diag?.dataChannelState || 'none'}
-                        </span>
-                      </div>
-
-                      <div className="flex flex-col">
-                        <span className="text-[#8b91a0]">Relay Status</span>
-                        <span className={hasActiveTransport ? 'text-[#47e266] font-semibold' : 'text-[#8b91a0]'}>
-                          {hasActiveTransport ? 'RELAYING' : 'PENDING'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
 
         {/* Live Diagnostics Console Toggle & Log Display */}
@@ -307,21 +549,21 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
             className="flex items-center justify-between text-[11px] text-[#aac7ff] font-semibold hover:text-[#fff] cursor-pointer py-1"
           >
             <span className="flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-[15px]">terminal</span>
+              <span className="material-symbols-outlined text-[14px]">terminal</span>
               <span>Live Mesh Event Log ({networkDiagnostics.recentLogs.length})</span>
             </span>
-            <span className="material-symbols-outlined text-[16px]">
+            <span className="material-symbols-outlined text-[15px]">
               {showLiveConsole ? 'expand_less' : 'expand_more'}
             </span>
           </button>
 
           {showLiveConsole && (
-            <div className="max-h-36 overflow-y-auto no-scrollbar rounded-xl bg-[#0d0d0d] p-2.5 font-mono text-[10px] flex flex-col gap-1 border border-[#222]">
+            <div className="max-h-32 overflow-y-auto no-scrollbar rounded-xl bg-[#0d0d0d] p-2 font-mono text-[9.5px] flex flex-col gap-1 border border-[#222]">
               {networkDiagnostics.recentLogs.length === 0 ? (
                 <span className="text-[#666]">Listening for mesh network events...</span>
               ) : (
-                networkDiagnostics.recentLogs.slice(0, 15).map((log) => (
-                  <div key={log.id} className="flex items-start gap-1.5 leading-tight">
+                networkDiagnostics.recentLogs.slice(0, 10).map((log) => (
+                  <div key={log.id} className="flex items-start gap-1 leading-tight">
                     <span className="text-[#555] shrink-0">
                       {new Date(log.timestamp).toLocaleTimeString().slice(3)}
                     </span>
@@ -345,220 +587,131 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
         </div>
       </div>
 
-      {/* ─── KINETIC RADAR VISUALIZATION (DEMO REFERENCE) ────────────────────── */}
-      <div className="relative w-full aspect-square max-w-[320px] min-h-[250px] mx-auto rounded-3xl bg-[#1c1b1b] border border-[#2a2a2a] p-4 flex items-center justify-center overflow-hidden shadow-2xl shrink-0">
-        {/* Honest Simulation Label Badge */}
-        <div className="absolute top-2.5 inset-x-3 flex justify-center pointer-events-none z-20">
-          <span className="px-2.5 py-0.5 rounded-full bg-[#131313]/90 border border-[#2a2a2a] text-[10px] font-medium text-[#8b91a0]">
-            Mesh topology visualization (Simulated Reference)
-          </span>
-        </div>
-
-        {/* Concentric Circles & Grid */}
-        <div className="absolute inset-4 rounded-full border border-[#2a2a2a]/40" />
-        <div className="absolute inset-14 rounded-full border border-[#2a2a2a]/60" />
-        <div className="absolute inset-24 rounded-full border border-[#3e90ff]/20" />
-        <div className="absolute inset-0 bg-radial from-[#3e90ff]/10 via-transparent to-transparent opacity-30 pointer-events-none" />
-
-        {/* Rotating Radar Sweep Beam */}
-        {isAutoScanning && (
-          <div
-            className="absolute inset-0 w-full h-full rounded-full pointer-events-none origin-center animate-spin"
-            style={{
-              animationDuration: '7s',
-              background: 'conic-gradient(from 0deg, rgba(62, 144, 255, 0.18) 0deg, rgba(62, 144, 255, 0) 65deg, transparent 360deg)',
-            }}
-          />
-        )}
-
-        {/* Center Anchor: You */}
-        <div className="relative z-10 flex flex-col items-center">
-          <div className="relative flex items-center justify-center">
-            <span className="animate-ping absolute h-8 w-8 rounded-full bg-[#47e266] opacity-30" />
-            <div className="w-9 h-9 rounded-full bg-[#00a73e] flex items-center justify-center shadow-[0_0_15px_#47e266] border-2 border-[#131313]">
-              <span className="material-symbols-outlined text-[18px] text-[#003910]">
-                radio_button_checked
+      {/* ─── SECTION 5: SIMULATED REFERENCE TOPOLOGY (DEMO ONLY) ───────────────── */}
+      <div className="p-3.5 rounded-3xl bg-[#141414] border border-[#252525] flex flex-col gap-3 shrink-0 opacity-90">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-[16px] text-[#ffb84e]">
+              science
+            </span>
+            <div className="flex flex-col">
+              <span className="text-[12px] font-bold text-[#e5e2e1]">
+                Simulated Reference Topology (Demo Mock)
+              </span>
+              <span className="text-[10px] text-[#ffb84e] font-semibold">
+                ⚠️ Not physical Android nodes · Reference visualization only
               </span>
             </div>
           </div>
-          <span className="text-[11px] text-[#e5e2e1] font-semibold mt-1 bg-[#131313]/90 px-2 py-0.5 rounded-full border border-[#2a2a2a]">
-            You
-          </span>
+
+          <button
+            onClick={() => setShowSimulatedReference(!showSimulatedReference)}
+            className="px-2.5 py-1 rounded-xl bg-[#222] hover:bg-[#2e2e2e] text-[#c0c6d6] text-[10.5px] font-semibold transition-all cursor-pointer"
+          >
+            {showSimulatedReference ? 'Hide Demo' : 'Show Demo'}
+          </button>
         </div>
 
-        {/* Peer 1 on Radar */}
-        <div
-          onClick={() => handleSelectPeer(peers[0])}
-          style={{ top: peers[0].radarPos.top, right: peers[0].radarPos.right }}
-          className="absolute z-10 flex flex-col items-center cursor-pointer transition-transform hover:scale-110 active:scale-95 group"
-        >
-          <div className="w-7 h-7 rounded-full bg-[#1c1b1b] border-2 border-[#47e266] flex items-center justify-center shadow-lg group-hover:bg-[#47e266]/20">
-            <span className="material-symbols-outlined text-[14px] text-[#47e266]">
-              medical_services
-            </span>
-          </div>
-          <span className="text-[9px] text-[#c0c6d6] font-medium bg-[#131313]/95 px-1.5 py-0.5 rounded-md mt-0.5 border border-[#2a2a2a] whitespace-nowrap shadow-xs">
-            {peers[0].radarLabel}
-          </span>
-        </div>
+        {showSimulatedReference && (
+          <div className="flex flex-col gap-3 pt-2 border-t border-[#202020] animate-in fade-in duration-150">
+            {/* Kinetic Radar (Simulated Reference) */}
+            <div className="relative w-full aspect-square max-w-[260px] mx-auto rounded-2xl bg-[#111] border border-[#222] p-3 flex items-center justify-center overflow-hidden shadow-inner">
+              <div className="absolute top-2 inset-x-2 flex justify-center pointer-events-none z-20">
+                <span className="px-2 py-0.5 rounded-full bg-[#181818]/90 border border-[#333] text-[9px] font-bold text-[#ffb84e]">
+                  DEMO MOCK RADAR
+                </span>
+              </div>
 
-        {/* Peer 2 on Radar */}
-        <div
-          onClick={() => handleSelectPeer(peers[1])}
-          style={{ bottom: peers[1].radarPos.bottom, left: peers[1].radarPos.left }}
-          className="absolute z-10 flex flex-col items-center cursor-pointer transition-transform hover:scale-110 active:scale-95 group"
-        >
-          <div className="w-7 h-7 rounded-full bg-[#1c1b1b] border-2 border-[#3e90ff] flex items-center justify-center shadow-lg group-hover:bg-[#3e90ff]/20">
-            <span className="material-symbols-outlined text-[14px] text-[#aac7ff]">
-              emergency
-            </span>
-          </div>
-          <span className="text-[9px] text-[#c0c6d6] font-medium bg-[#131313]/95 px-1.5 py-0.5 rounded-md mt-0.5 border border-[#2a2a2a] whitespace-nowrap shadow-xs">
-            {peers[1].radarLabel}
-          </span>
-        </div>
+              {/* Concentric Circles */}
+              <div className="absolute inset-4 rounded-full border border-[#222]" />
+              <div className="absolute inset-12 rounded-full border border-[#222]" />
+              <div className="absolute inset-20 rounded-full border border-[#3e90ff]/20" />
 
-        {/* Peer 3 on Radar */}
-        <div
-          onClick={() => handleSelectPeer(peers[2])}
-          style={{ bottom: peers[2].radarPos.bottom, right: peers[2].radarPos.right }}
-          className="absolute z-10 flex flex-col items-center cursor-pointer transition-transform hover:scale-110 active:scale-95 group"
-        >
-          <div className="w-6 h-6 rounded-full bg-[#1c1b1b] border border-[#8b91a0] flex items-center justify-center shadow-md">
-            <span className="material-symbols-outlined text-[13px] text-[#8b91a0]">
-              sensors
-            </span>
-          </div>
-          <span className="text-[9px] text-[#8b91a0] bg-[#131313]/95 px-1 rounded-md mt-0.5 border border-[#2a2a2a] whitespace-nowrap shadow-xs">
-            {peers[2].radarLabel}
-          </span>
-        </div>
-
-        {/* Peer 4 on Radar */}
-        <div
-          onClick={() => handleSelectPeer(peers[3])}
-          style={{ top: peers[3].radarPos.top, left: peers[3].radarPos.left }}
-          className="absolute z-10 flex flex-col items-center cursor-pointer transition-transform hover:scale-110 active:scale-95 group"
-        >
-          <div className="w-6 h-6 rounded-full bg-[#1c1b1b] border border-[#c6c6c7] flex items-center justify-center shadow-md">
-            <span className="material-symbols-outlined text-[13px] text-[#c6c6c7]">
-              cell_tower
-            </span>
-          </div>
-          <span className="text-[9px] text-[#c6c6c7] bg-[#131313]/95 px-1 rounded-md mt-0.5 border border-[#2a2a2a] whitespace-nowrap shadow-xs">
-            {peers[3].radarLabel}
-          </span>
-        </div>
-      </div>
-
-      {/* Live Telemetry Pill */}
-      <div className="flex justify-center shrink-0">
-        <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#1c1b1b] border border-[#2a2a2a] text-[#c0c6d6] text-[11px] shadow-sm">
-          <span className="material-symbols-outlined text-[14px] text-[#47e266]">
-            {realPeerCount > 0 ? 'check_circle' : 'sensors'}
-          </span>
-          <span className="text-[#e5e2e1] font-medium">
-            {realPeerCount > 0 ? `${realPeerCount} Peer Connection${realPeerCount > 1 ? 's' : ''} Active` : 'WebRTC Mesh Standby'}
-          </span>
-          <span className="text-[#8b91a0]">·</span>
-          <span>Store-Carry-Forward Engine Active</span>
-        </div>
-      </div>
-
-      {/* Simulated Mesh Nodes (Demo Topology) */}
-      <div className="flex flex-col gap-2.5 shrink-0">
-        <div className="flex items-center justify-between px-1">
-          <h2 className="text-[15px] font-semibold text-[#e5e2e1] tracking-tight">
-            Mesh Topology Reference Nodes
-          </h2>
-          <span className="text-[10.5px] text-[#8b91a0]">
-            Simulated
-          </span>
-        </div>
-
-        {peers.map((peer) => {
-          const isHighlighted = highlightedPeerId === peer.id;
-
-          return (
-            <div
-              key={peer.id}
-              onClick={() => handleSelectPeer(peer)}
-              className={`p-3.5 rounded-2xl bg-[#1c1b1b] border flex items-center justify-between cursor-pointer transition-all active:scale-[0.99] shrink-0 ${
-                isHighlighted
-                  ? 'border-[#47e266] shadow-[0_0_20px_rgba(71,226,102,0.2)] bg-[#201f1f]'
-                  : 'border-[#2a2a2a] hover:border-[#353534]'
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-                  peer.typeBadge === 'Direct'
-                    ? 'bg-[#47e266]/15 text-[#47e266]'
-                    : peer.typeBadge === 'Relay'
-                    ? 'bg-[#3e90ff]/15 text-[#aac7ff]'
-                    : 'bg-[#2a2a2a] text-[#c0c6d6]'
-                }`}>
-                  <span className="material-symbols-outlined text-[20px]">{peer.icon}</span>
+              {/* Center: You */}
+              <div className="relative z-10 flex flex-col items-center">
+                <div className="w-7 h-7 rounded-full bg-[#00a73e] flex items-center justify-center border border-[#131313]">
+                  <span className="material-symbols-outlined text-[15px] text-[#003910]">
+                    radio_button_checked
+                  </span>
                 </div>
+                <span className="text-[9.5px] text-[#e5e2e1] font-semibold mt-0.5 bg-[#181818] px-1.5 py-0.5 rounded-md border border-[#2a2a2a]">
+                  You
+                </span>
+              </div>
 
-                <div className="flex flex-col">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[14px] font-semibold text-[#e5e2e1]">{peer.name}</span>
-                    <span className={`text-[9.5px] px-2 py-0.5 rounded-full font-semibold ${
-                      peer.typeBadge === 'Direct'
-                        ? 'bg-[#47e266]/15 text-[#47e266]'
-                        : peer.typeBadge === 'Relay'
-                        ? 'bg-[#3e90ff]/15 text-[#aac7ff]'
-                        : 'bg-[#2a2a2a] text-[#c0c6d6]'
-                    }`}>
-                      {peer.typeBadge}
+              {/* Simulated Peers on Radar */}
+              {peers.map((peer, idx) => (
+                <div
+                  key={peer.id}
+                  onClick={() => handleSelectSimulatedPeer(peer)}
+                  style={
+                    idx === 0
+                      ? { top: peer.radarPos.top, right: peer.radarPos.right }
+                      : idx === 1
+                      ? { bottom: peer.radarPos.bottom, left: peer.radarPos.left }
+                      : idx === 2
+                      ? { bottom: peer.radarPos.bottom, right: peer.radarPos.right }
+                      : { top: peer.radarPos.top, left: peer.radarPos.left }
+                  }
+                  className="absolute z-10 flex flex-col items-center cursor-pointer transition-transform hover:scale-110 active:scale-95"
+                >
+                  <div className="w-6 h-6 rounded-full bg-[#1c1b1b] border border-[#888] flex items-center justify-center shadow-sm">
+                    <span className="material-symbols-outlined text-[12px] text-[#aaa]">
+                      {peer.icon}
                     </span>
                   </div>
-                  <span className="text-[11.5px] text-[#c0c6d6] mt-0.5">
-                    {peer.role} · {peer.distance}
+                  <span className="text-[8.5px] text-[#aaa] font-medium bg-[#111]/90 px-1 py-0.2 rounded mt-0.5 border border-[#222] whitespace-nowrap">
+                    {peer.radarLabel} (Sim)
                   </span>
-                  <span className="text-[10.5px] text-[#8b91a0] mt-0.5">{peer.syncTime}</span>
                 </div>
-              </div>
-
-              {/* Signal Bar Visualizer */}
-              <div className="flex flex-col items-end gap-1">
-                {renderSignalBars(peer.signalBars)}
-                <span className="text-[10px] text-[#8b91a0] font-medium">{peer.signalStrength}</span>
-              </div>
+              ))}
             </div>
-          );
-        })}
+
+            {/* Simulated Nodes List */}
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[11px] font-bold text-[#888] uppercase tracking-wider px-1">
+                Simulated Reference Nodes
+              </span>
+              {peers.map((peer) => {
+                const isHighlighted = highlightedPeerId === peer.id;
+                return (
+                  <div
+                    key={peer.id}
+                    onClick={() => handleSelectSimulatedPeer(peer)}
+                    className={`p-2.5 rounded-xl bg-[#181818] border flex items-center justify-between cursor-pointer transition-all active:scale-[0.99] ${
+                      isHighlighted ? 'border-[#ffb84e] bg-[#242018]' : 'border-[#242424] hover:border-[#333]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-[#222] text-[#888] flex items-center justify-center">
+                        <span className="material-symbols-outlined text-[16px]">{peer.icon}</span>
+                      </div>
+                      <div className="flex flex-col">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[12.5px] font-semibold text-[#ccc]">{peer.name}</span>
+                          <span className="text-[8.5px] px-1.5 py-0.2 rounded bg-[#222] text-[#ffb84e] border border-[#333]">
+                            Simulated
+                          </span>
+                        </div>
+                        <span className="text-[10.5px] text-[#777]">
+                          {peer.role} · {peer.distance} (Mock)
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col items-end gap-0.5">
+                      {renderSignalBars(peer.signalBars)}
+                      <span className="text-[9px] text-[#666]">{peer.signalStrength}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Background Mesh Discovery Switch */}
-      <div className="p-4 rounded-2xl bg-[#1c1b1b] border border-[#2a2a2a] flex items-center justify-between shrink-0">
-        <div className="flex flex-col pr-4">
-          <span className="text-[14px] font-medium text-[#e5e2e1]">
-            Background Mesh Discovery
-          </span>
-          <span className="text-[12px] text-[#c0c6d6] mt-0.5">
-            Continuously discover peers when screen is locked
-          </span>
-        </div>
-        <button
-          onClick={() => {
-            const next = !backgroundDiscovery;
-            setBackgroundDiscovery(next);
-            onShowToast(next ? 'Background discovery enabled' : 'Background discovery disabled');
-          }}
-          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-            backgroundDiscovery ? 'bg-[#3e90ff]' : 'bg-[#414754]'
-          }`}
-        >
-          <span
-            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-              backgroundDiscovery ? 'translate-x-5' : 'translate-x-0'
-            }`}
-          />
-        </button>
-      </div>
-
-      {/* Human-Centered Guarantee Card */}
+      {/* ─── SECTION 6: STORE & FORWARD GUARANTEE CARD ───────────────────────── */}
       <div className="p-4 rounded-2xl bg-[#201f1f]/60 border border-[#2a2a2a]/60 flex items-start justify-between gap-3 shrink-0">
         <div className="flex items-start gap-3">
           <span className={`material-symbols-outlined text-[20px] shrink-0 mt-0.5 ${

@@ -14,3 +14,7 @@ export * from './webSocketTransportProvider.ts';
 export * from './relayEngine.ts';
 export * from './mockStorageAdapter.ts';
 export * from './multiTransportManager.ts';
+export * from './nativeBridge.ts';
+export * from './nativeTransport.ts';
+export * from './nativeTransportProvider.ts';
+export * from './capacitorBridge.ts';

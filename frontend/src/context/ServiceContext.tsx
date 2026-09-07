@@ -119,6 +119,7 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       deviceId,
       relayEngine: networkService,
       signalingUrl: getSignalingUrl(),
+      enableNativeTransport: true,
     });
   }, [deviceId, networkService]);
 
