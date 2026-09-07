@@ -9,12 +9,18 @@ import { useNexusServices } from '../context/ServiceContext';
 interface MapTabProps {
   onShowToast: (msg: string) => void;
   incidents?: IncidentItem[];
+  recalibrateSignal?: number;
 }
 
-export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) => {
+export const MapTab: React.FC<MapTabProps> = ({
+  onShowToast,
+  incidents = [],
+  recalibrateSignal,
+}) => {
   const { currentLocation, requestLocation } = useNexusServices();
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
+  const [map, setMap] = useState<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const userMarkerRef = useRef<L.Marker | null>(null);
   const userCircleRef = useRef<L.Circle | null>(null);
@@ -89,11 +95,16 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
   useEffect(() => {
     if (!mapContainerRef.current || mapInstanceRef.current) return;
 
-    // Default reference center if GPS not yet acquired
-    const initialLat = incidents.length > 0 && incidents[0].latitude ? incidents[0].latitude : 13.0827;
-    const initialLng = incidents.length > 0 && incidents[0].longitude ? incidents[0].longitude : 80.2707;
+    // Remove stale Leaflet ID on container if previously set
+    if ((mapContainerRef.current as any)._leaflet_id) {
+      delete (mapContainerRef.current as any)._leaflet_id;
+    }
 
-    const map = L.map(mapContainerRef.current, {
+    // Default reference center: Amrita Vengal Campus or first valid incident
+    const initialLat = incidents.length > 0 && incidents[0].latitude ? incidents[0].latitude : 13.2384;
+    const initialLng = incidents.length > 0 && incidents[0].longitude ? incidents[0].longitude : 80.0094;
+
+    const leafletInstance = L.map(mapContainerRef.current, {
       center: [initialLat, initialLng],
       zoom: 14,
       zoomControl: false,
@@ -106,38 +117,51 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
       maxZoom: initialConfig.maxZoom,
       subdomains: (initialConfig.subdomains as any) || 'abc',
       attribution: initialConfig.attribution,
-    }).addTo(map);
+    }).addTo(leafletInstance);
 
     tileLayerRef.current = darkTiles;
-    mapInstanceRef.current = map;
+    mapInstanceRef.current = leafletInstance;
+    setMap(leafletInstance);
+
+    // Initial frame of incidents
+    const validCoords: [number, number][] = incidents
+      .filter((i) => i.latitude !== undefined && i.longitude !== undefined)
+      .map((i) => [i.latitude!, i.longitude!]);
+
+    if (validCoords.length > 1) {
+      const bounds = L.latLngBounds(validCoords);
+      leafletInstance.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
+    }
 
     // Auto-locate user on mount
     getCurrentPosition({ enableHighAccuracy: true, timeout: 8000 })
       .then((pos) => {
         if (pos.success && pos.coords) {
           setUserLocation(pos.coords);
-          map.flyTo([pos.coords.latitude, pos.coords.longitude], 15, { duration: 1 });
+          if (validCoords.length === 0) {
+            leafletInstance.flyTo([pos.coords.latitude, pos.coords.longitude], 15, { duration: 1 });
+          }
         }
       })
       .catch(() => {});
 
     // Invalidate size on resize
     const resizeObserver = new ResizeObserver(() => {
-      map.invalidateSize();
+      leafletInstance.invalidateSize();
     });
     resizeObserver.observe(mapContainerRef.current);
 
     return () => {
       resizeObserver.disconnect();
-      map.remove();
+      leafletInstance.remove();
       mapInstanceRef.current = null;
+      setMap(null);
     };
   }, []);
 
   // 2. Toggle tile layer (Dark Tactical vs OSM Street)
   useEffect(() => {
-    if (!mapInstanceRef.current) return;
-    const map = mapInstanceRef.current;
+    if (!map) return;
 
     if (tileLayerRef.current) {
       map.removeLayer(tileLayerRef.current);
@@ -149,12 +173,11 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
       subdomains: (config.subdomains as any) || 'abc',
       attribution: config.attribution,
     }).addTo(map);
-  }, [isSatelliteLayer]);
+  }, [map, isSatelliteLayer]);
 
   // 3. Update User Location Marker & Accuracy Circle
   useEffect(() => {
-    if (!mapInstanceRef.current || !userLocation) return;
-    const map = mapInstanceRef.current;
+    if (!map || !userLocation) return;
 
     const userHtml = `
       <div class="relative flex items-center justify-center w-8 h-8">
@@ -195,12 +218,12 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
         userCircleRef.current.setRadius(Math.min(userLocation.accuracy, 250));
       }
     }
-  }, [userLocation]);
+  }, [map, userLocation]);
 
-  // 4. Update Incident Markers on Map
+  // 4. Update Incident Markers on Map & Interlink Hop Lines
   useEffect(() => {
-    if (!mapInstanceRef.current) return;
-    const map = mapInstanceRef.current;
+    if (!map) return;
+    map.invalidateSize();
     const existingMarkers = incidentMarkersRef.current;
 
     // Track active ids to remove stale ones
@@ -256,7 +279,7 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
               : isAmber
               ? 'bg-[#1c1b1b]/95 text-amber-300 border-amber-500/50'
               : 'bg-[#1c1b1b]/95 text-[#aac7ff] border-[#3e90ff]/50'
-          }">${inc.title.slice(0, 16)}</span>
+          }">${(inc.title || 'Incident').slice(0, 16)}</span>
         </div>
       `;
 
@@ -296,10 +319,10 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
     if (validCoords.length >= 2) {
       if (!meshLinesRef.current) {
         meshLinesRef.current = L.polyline(validCoords, {
-          color: '#aac7ff',
-          dashArray: '4, 6',
-          weight: 1.5,
-          opacity: 0.35,
+          color: '#3e90ff',
+          dashArray: '6, 6',
+          weight: 2.5,
+          opacity: 0.75,
         }).addTo(map);
       } else {
         meshLinesRef.current.setLatLngs(validCoords);
@@ -308,12 +331,11 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
       map.removeLayer(meshLinesRef.current);
       meshLinesRef.current = null;
     }
-  }, [incidents, selectedBeacon]);
+  }, [map, incidents, selectedBeacon]);
 
   // 5. Navigation Route Line
   useEffect(() => {
-    if (!mapInstanceRef.current) return;
-    const map = mapInstanceRef.current;
+    if (!map) return;
 
     if (isNavigating && userLocation && selectedIncident && selectedIncident.latitude && selectedIncident.longitude) {
       const routeCoords: [number, number][] = [
@@ -335,7 +357,39 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
       map.removeLayer(navRouteRef.current);
       navRouteRef.current = null;
     }
-  }, [isNavigating, userLocation, selectedIncident]);
+  }, [map, isNavigating, userLocation, selectedIncident]);
+
+  // Fit perimeter across all nodes
+  const fitPerimeter = () => {
+    if (!map) return;
+    map.invalidateSize();
+    const validCoords: [number, number][] = incidents
+      .filter((i) => i.latitude !== undefined && i.longitude !== undefined)
+      .map((i) => [i.latitude!, i.longitude!]);
+
+    if (userLocation) {
+      validCoords.push([userLocation.latitude, userLocation.longitude]);
+    }
+
+    if (validCoords.length > 1) {
+      const bounds = L.latLngBounds(validCoords);
+      map.fitBounds(bounds, { padding: [60, 60], maxZoom: 16 });
+      onShowToast(`Tactical perimeter fit: ${validCoords.length} mesh nodes in view`);
+    } else if (validCoords.length === 1) {
+      map.flyTo(validCoords[0], 15, { duration: 0.8 });
+      onShowToast(`Centered on tactical node`);
+    } else {
+      map.flyTo([13.2384, 80.0094], 15, { duration: 0.8 });
+      onShowToast('Centered on Amrita Vengal Campus Hub');
+    }
+  };
+
+  // Recalibrate trigger from AdminDashboard
+  useEffect(() => {
+    if (recalibrateSignal && recalibrateSignal > 0) {
+      fitPerimeter();
+    }
+  }, [recalibrateSignal]);
 
   const handleRecenter = async () => {
     setIsSpinningRecenter(true);
@@ -476,6 +530,17 @@ export const MapTab: React.FC<MapTabProps> = ({ onShowToast, incidents = [] }) =
               title="Toggle Map Style"
             >
               <span className="material-symbols-outlined text-[18px]">layers</span>
+            </button>
+
+            {/* Fit Perimeter / All Nodes Button */}
+            <button
+              aria-label="Fit all nodes"
+              onClick={fitPerimeter}
+              className="w-9 h-9 rounded-xl bg-[#1c1b1b]/90 backdrop-blur-xl shadow-md flex items-center justify-center text-[#aac7ff] hover:bg-[#2a2a2a] transition-all active:scale-95 cursor-pointer border border-[#2a2a2a]"
+              type="button"
+              title="Fit Perimeter (All Hops & Beacons)"
+            >
+              <span className="material-symbols-outlined text-[18px]">fit_screen</span>
             </button>
 
             {/* Use My Location / GPS Pill */}

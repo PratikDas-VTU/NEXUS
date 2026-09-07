@@ -59,6 +59,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   } = useNexusServices();
 
   const [activeNav, setActiveNav] = useState<AdminNavTab>('overview');
+  const [recalibrateSignal, setRecalibrateSignal] = useState<number>(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
@@ -489,7 +490,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                     {/* Interactive Tactical Map */}
                     <div className="w-full h-[380px] rounded-2xl overflow-hidden border border-[#282830]">
-                      <MapTab onShowToast={onShowToast} incidents={incidents} />
+                      <MapTab onShowToast={onShowToast} incidents={incidents} recalibrateSignal={recalibrateSignal} />
                     </div>
                   </div>
 
@@ -732,7 +733,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </p>
                 </div>
                 <button
-                  onClick={() => onShowToast('Perimeter coordinates refreshed from local cache')}
+                  onClick={() => {
+                    setRecalibrateSignal((c) => c + 1);
+                    onShowToast('Perimeter GIS bounds recalibrated to all active mesh nodes');
+                  }}
                   className="px-3 py-1.5 rounded-xl bg-[#1f1f26] hover:bg-[#282832] text-xs font-semibold text-[#aac7ff] border border-[#333] cursor-pointer"
                 >
                   Recalibrate GIS
@@ -740,7 +744,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
 
               <div className="w-full h-[620px] rounded-3xl overflow-hidden border border-[#26262e] shadow-2xl">
-                <MapTab onShowToast={onShowToast} incidents={incidents} />
+                <MapTab onShowToast={onShowToast} incidents={incidents} recalibrateSignal={recalibrateSignal} />
               </div>
             </div>
           )}

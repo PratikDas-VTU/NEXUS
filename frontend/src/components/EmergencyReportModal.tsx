@@ -39,8 +39,8 @@ export const EmergencyReportModal: React.FC<EmergencyReportModalProps> = ({
   
   // Location source priority: 1. Current LIVE GPS, 2. Last known CACHED GPS, 3. Manual
   const [locationSource, setLocationSource] = useState<'LIVE' | 'CACHED' | 'MANUAL'>('MANUAL');
-  const [latInput, setLatInput] = useState<string>('12.9716');
-  const [lngInput, setLngInput] = useState<string>('77.5946');
+  const [latInput, setLatInput] = useState<string>('13.2384');
+  const [lngInput, setLngInput] = useState<string>('80.0094');
   const [accuracy, setAccuracy] = useState<number | undefined>(undefined);
   const [isRefreshingGps, setIsRefreshingGps] = useState<boolean>(false);
   const [locationError, setLocationError] = useState<string>('');
@@ -65,8 +65,8 @@ export const EmergencyReportModal: React.FC<EmergencyReportModalProps> = ({
       }
     } else {
       setLocationSource('MANUAL');
-      setLatInput('12.9716');
-      setLngInput('77.5946');
+      setLatInput('13.2384');
+      setLngInput('80.0094');
       setAccuracy(undefined);
     }
     setLocationError('');

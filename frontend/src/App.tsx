@@ -114,8 +114,8 @@ function AppContent() {
 
   const handleBroadcastEmergency = async () => {
     try {
-      const lat = currentLocation ? currentLocation.latitude : 12.9716;
-      const lng = currentLocation ? currentLocation.longitude : 77.5946;
+      const lat = currentLocation ? currentLocation.latitude : 13.2384 + (Math.random() - 0.5) * 0.004;
+      const lng = currentLocation ? currentLocation.longitude : 80.0094 + (Math.random() - 0.5) * 0.004;
       await createIncident({
         type: 'medical',
         priority: 'P0',
@@ -158,14 +158,14 @@ function AppContent() {
         priority = 'P2';
       }
 
-      const baseLat = currentLocation ? currentLocation.latitude : 12.972;
-      const baseLng = currentLocation ? currentLocation.longitude : 77.595;
+      const baseLat = currentLocation ? currentLocation.latitude : 13.2384;
+      const baseLng = currentLocation ? currentLocation.longitude : 80.0094;
 
       await createIncident({
         type,
         priority,
-        latitude: baseLat + (Math.random() - 0.5) * 0.01,
-        longitude: baseLng + (Math.random() - 0.5) * 0.01,
+        latitude: baseLat + (Math.random() - 0.5) * 0.006,
+        longitude: baseLng + (Math.random() - 0.5) * 0.006,
         peopleAffected: 2,
         description: `${data.title}\n${data.description}`,
       });
