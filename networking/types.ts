@@ -14,7 +14,8 @@ export type SignalingMessageType =
   | 'SIGNAL_ANSWER'
   | 'SIGNAL_CANDIDATE'
   | 'SIGNAL_RELAY'
-  | 'SIGNAL_ERROR';
+  | 'SIGNAL_ERROR'
+  | 'SIGNAL_PURGE_ALL';
 
 export interface SignalBaseMessage {
   type: SignalingMessageType;

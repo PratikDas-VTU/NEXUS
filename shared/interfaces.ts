@@ -112,7 +112,7 @@ export type NetworkTransportMode = 'disconnected' | 'signaling' | 'webrtc' | 'we
 export interface ConnectedPeerInfo {
   peerId: string;
   deviceId: string;
-  transportType: 'webrtc' | 'websocket';
+  transportType: TransportType;
   connectedAt: number;
   lastPingAt: number;
   relayedCount: number;
@@ -141,15 +141,49 @@ export interface INetworkRelayService {
 // ─── 4. TRANSPORT LAYER BOUNDARY ─────────────────────────────────────────────
 
 /**
- * Abstraction over WebRTC DataChannel vs Local WebSocket fallback.
- * The RelayEngine operates entirely over ITransport.
+ * Generalized transport identifier.
+ * Includes concrete implementations ('webrtc', 'websocket') and
+ * architectural placeholders for future native transports.
  */
-export interface ITransport {
-  readonly transportType: 'webrtc' | 'websocket';
+export type TransportType =
+  | 'webrtc'
+  | 'websocket'
+  | 'ble'
+  | 'wifi-direct'
+  | 'wifi-aware'
+  | 'nearby'
+  | (string & {});
+
+/**
+ * Generalized peer-to-peer transport interface.
+ * Represents an active, bidirectional communication channel to a single peer.
+ * The RelayEngine and store-carry-forward protocol operate entirely over NexusTransport.
+ */
+export interface NexusTransport {
+  readonly transportType: TransportType;
   readonly remotePeerId: string;
+
   isOpen(): boolean;
+
   send(message: RelayMessage): Promise<void>;
+
   onMessage(handler: (message: RelayMessage) => void): void;
+
   onClose(handler: (reason?: string) => void): void;
-  close(): void;
+
+  close(reason?: string): void;
+
+  /**
+   * Optional transport metadata for quality assessment and multi-transport routing.
+   */
+  readonly metadata?: {
+    mtu?: number;
+    estimatedBandwidth?: 'low' | 'medium' | 'high';
+    isDirectP2P?: boolean;
+  };
 }
+
+/**
+ * Backward-compatibility alias so existing code continues compiling without a large migration.
+ */
+export type ITransport = NexusTransport;

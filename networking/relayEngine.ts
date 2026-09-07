@@ -22,6 +22,7 @@ import type {
   ITransport,
   RelayNetworkStatus,
 } from '../shared/interfaces.ts';
+import type { MultiTransportManager } from './multiTransportManager.ts';
 import type {
   AckMessage,
   HelloMessage,
@@ -67,21 +68,58 @@ export class RelayEngine implements INetworkRelayService {
   private isSignalingOnline = false;
   private currentSignalingUrl?: string;
   private totalRelayedCounter = 0;
+  private transportManager?: MultiTransportManager;
   public onPurge?: (fromPeerId: string, reason?: string) => void;
 
-  constructor(localDeviceId: DeviceId, storageAdapter: IOfflineStorageAdapter) {
+  constructor(
+    localDeviceId: DeviceId,
+    storageAdapter: IOfflineStorageAdapter,
+    transportManager?: MultiTransportManager
+  ) {
     this.localDeviceId = localDeviceId;
     this.storage = storageAdapter;
+    this.transportManager = transportManager;
+  }
+
+  public getTransportManager(): MultiTransportManager | undefined {
+    return this.transportManager;
+  }
+
+  public setTransportManager(manager: MultiTransportManager): void {
+    this.transportManager = manager;
   }
 
   // ─── PEER TRANSPORT LIFECYCLE ──────────────────────────────────────────────
 
   /**
-   * Registers an open transport (WebRTC DataChannel or WebSocket fallback).
-   * Initiates the Stage 1 HELLO handshake.
+   * Registers an open transport (WebRTC DataChannel, WebSocket fallback, etc.).
+   * If a MultiTransportManager is configured, it tracks the transport and wraps
+   * the peer session with a managed NexusTransport that seamlessly routes to
+   * the preferred active transport without re-triggering handshakes.
    */
   public registerTransport(transport: ITransport): void {
     const peerId = transport.remotePeerId;
+
+    if (this.transportManager) {
+      this.transportManager.registerTransport(transport);
+
+      // If peer already has an active session, the manager now tracks this additional
+      // transport. We do not restart the handshake or overwrite the session.
+      if (this.activePeers.has(peerId)) {
+        this.notifyStatusChange();
+        return;
+      }
+
+      // First transport for this peer: establish session using the managed peer transport
+      const managedTransport = this.transportManager.getPeerTransport(peerId);
+      this.setupPeerSession(peerId, managedTransport);
+      return;
+    }
+
+    this.setupPeerSession(peerId, transport);
+  }
+
+  private setupPeerSession(peerId: string, transport: ITransport): void {
     const sessionId = `ses_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
     const session: ActivePeerSession = {
@@ -116,6 +154,9 @@ export class RelayEngine implements INetworkRelayService {
    * Unregisters a peer and closes its underlying transport.
    */
   public unregisterPeer(peerId: string): void {
+    if (this.transportManager) {
+      this.transportManager.removeTransport(peerId);
+    }
     const session = this.activePeers.get(peerId);
     if (session) {
       session.transport.close();
@@ -386,6 +427,9 @@ export class RelayEngine implements INetworkRelayService {
       session.transport.close();
     }
     this.activePeers.clear();
+    if (this.transportManager) {
+      this.transportManager.closeAll();
+    }
     this.isSignalingOnline = false;
     this.notifyStatusChange();
   }

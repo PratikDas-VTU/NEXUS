@@ -1,8 +1,12 @@
 import { RelayEngine } from '../../../networking/relayEngine';
 import { SignalingClient } from '../../../networking/signalingClient';
-import { WebRtcTransport } from '../../../networking/webRtcTransport';
 import { WebSocketTransport } from '../../../networking/webSocketTransport';
 import type { PeerDescriptor } from '../../../networking/types';
+import type { TransportType } from '../../../shared/interfaces';
+import type { INexusTransportProvider } from '../../../networking/transportProvider';
+import { WebRtcTransportProvider } from '../../../networking/webRtcTransportProvider';
+import { WebSocketTransportProvider } from '../../../networking/webSocketTransportProvider';
+import { MultiTransportManager, type TransportHealth } from '../../../networking/multiTransportManager';
 
 export interface NetworkCoordinatorOptions {
   deviceId: string;
@@ -15,8 +19,11 @@ export interface PeerConnectionDiagnostic {
   connectionState: RTCPeerConnectionState | 'unsupported';
   iceConnectionState: RTCIceConnectionState | 'unsupported';
   dataChannelState: RTCDataChannelState | 'none';
-  transportType: 'webrtc' | 'websocket' | 'none';
+  transportType: TransportType | 'none';
   updatedAt: number;
+  availableTransports?: TransportType[];
+  preferredTransport?: TransportType | 'none';
+  health?: Record<string, TransportHealth>;
 }
 
 export interface NetworkLogEntry {
@@ -38,27 +45,21 @@ export interface NetworkDiagnostics {
   recentLogs: NetworkLogEntry[];
 }
 
-const DEFAULT_ICE_SERVERS: RTCConfiguration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-  ],
-  iceCandidatePoolSize: 0,
-};
-
 export class NetworkCoordinator {
   private deviceId: string;
   private relayEngine: RelayEngine;
   private signalingUrl: string;
   private signalingClient: SignalingClient | null = null;
-  private peerConnections = new Map<string, RTCPeerConnection>();
-  private dataChannels = new Map<string, RTCDataChannel>();
-  private webRtcTransports = new Map<string, WebRtcTransport>();
   private webSocketTransports = new Map<string, WebSocketTransport>();
   private discoveredPeers = new Map<string, PeerDescriptor>();
-  private pendingCandidates = new Map<string, RTCIceCandidateInit[]>();
   private fallbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private isStarted = false;
+
+  // Transport Providers & Multi-Transport Manager (Phase 2, 3, 4)
+  private webRtcProvider: WebRtcTransportProvider;
+  private webSocketProvider: WebSocketTransportProvider;
+  private providers: INexusTransportProvider[];
+  private multiTransportManager: MultiTransportManager;
 
   // Diagnostics
   private signalingState: 'CONNECTED' | 'CONNECTING' | 'DISCONNECTED' = 'DISCONNECTED';
@@ -72,6 +73,48 @@ export class NetworkCoordinator {
     this.deviceId = options.deviceId;
     this.relayEngine = options.relayEngine;
     this.signalingUrl = options.signalingUrl || 'ws://localhost:8080';
+
+    // Initialize Multi-Transport Connection Manager (Phase 4)
+    this.multiTransportManager = new MultiTransportManager({
+      onLog: (level, msg) => this.log(level, msg),
+      onPreferredTransportChange: (peerId, preferred) => {
+        this.log('info', `Preferred transport changed for ${peerId}: ${preferred?.transportType || 'none'}`);
+        this.notifyDiagnostics();
+      },
+    });
+
+    // Wire MultiTransportManager to RelayEngine
+    this.relayEngine.setTransportManager(this.multiTransportManager);
+
+    // Initialize WebRTC transport provider with delegation hooks
+    this.webRtcProvider = new WebRtcTransportProvider({
+      localDeviceId: this.deviceId,
+      signalingClient: null,
+      onLog: (level, msg) => this.log(level, msg),
+      onPeerConnected: (peerId) => {
+        this.clearFallbackTimer(peerId);
+        this.notifyDiagnostics();
+      },
+      onPeerFailed: (peerId) => {
+        this.activateWebSocketFallback(peerId);
+      },
+      onStateChange: () => {
+        this.notifyDiagnostics();
+      },
+    });
+
+    // Initialize WebSocket fallback transport provider
+    this.webSocketProvider = new WebSocketTransportProvider();
+    this.providers = [this.webRtcProvider, this.webSocketProvider];
+
+    // Route transport-ready events from any provider into MultiTransportManager and RelayEngine
+    for (const provider of this.providers) {
+      provider.onTransportReady((transport) => {
+        this.multiTransportManager.registerTransport(transport);
+        this.relayEngine.registerTransport(transport);
+      });
+    }
+
     this.log('info', `Coordinator initialized for device ${this.deviceId}`);
 
     this.relayEngine.onPurge = (fromPeerId, reason) => {
@@ -80,10 +123,24 @@ export class NetworkCoordinator {
     };
   }
 
+  public getMultiTransportManager(): MultiTransportManager {
+    return this.multiTransportManager;
+  }
+
+  public getProviders(): INexusTransportProvider[] {
+    return [...this.providers];
+  }
+
+  public getProvider(id: string): INexusTransportProvider | undefined {
+    return this.providers.find((p) => p.id === id);
+  }
+
   public updateDeviceId(newDeviceId: string): void {
     if (this.deviceId === newDeviceId) return;
     this.log('info', `Updating device ID from ${this.deviceId} to ${newDeviceId}`);
     this.deviceId = newDeviceId;
+    this.webRtcProvider.setLocalDeviceId(newDeviceId);
+
     if (this.isStarted) {
       this.restart().catch((err) => {
         this.log('error', `Failed to restart coordinator with new deviceId: ${err?.message}`);
@@ -94,6 +151,10 @@ export class NetworkCoordinator {
   public async start(customUrl?: string): Promise<void> {
     if (this.isStarted) return;
     this.isStarted = true;
+
+    for (const provider of this.providers) {
+      provider.start();
+    }
 
     const url = customUrl || this.signalingUrl;
     this.signalingUrl = url;
@@ -110,6 +171,9 @@ export class NetworkCoordinator {
         deviceId: this.deviceId,
         autoReconnect: true,
       });
+
+      // Inject active signaling client into WebRTC provider
+      this.webRtcProvider.setSignalingClient(this.signalingClient);
 
       this.signalingClient.onStateChange = (connected) => {
         this.signalingState = connected ? 'CONNECTED' : 'DISCONNECTED';
@@ -140,18 +204,20 @@ export class NetworkCoordinator {
         this.notifyDiagnostics();
       };
 
+      // Delegate WebRTC signaling messages directly to WebRtcTransportProvider
       this.signalingClient.onOffer = async (fromPeerId, sdp) => {
         this.log('info', `Received WebRTC OFFER from ${fromPeerId}`);
-        await this.handleOffer(fromPeerId, sdp as RTCSessionDescriptionInit);
+        this.scheduleFallbackTimer(fromPeerId);
+        await this.webRtcProvider.handleOffer(fromPeerId, sdp as RTCSessionDescriptionInit);
       };
 
       this.signalingClient.onAnswer = async (fromPeerId, sdp) => {
         this.log('info', `Received WebRTC ANSWER from ${fromPeerId}`);
-        await this.handleAnswer(fromPeerId, sdp as RTCSessionDescriptionInit);
+        await this.webRtcProvider.handleAnswer(fromPeerId, sdp as RTCSessionDescriptionInit);
       };
 
       this.signalingClient.onCandidate = async (fromPeerId, candidate) => {
-        await this.handleCandidate(fromPeerId, candidate as RTCIceCandidateInit);
+        await this.webRtcProvider.handleCandidate(fromPeerId, candidate as RTCIceCandidateInit);
       };
 
       // Handle WebSocket fallback relay messages
@@ -164,7 +230,7 @@ export class NetworkCoordinator {
             signalingClient: this.signalingClient!,
           });
           this.webSocketTransports.set(fromPeerId, wsTransport);
-          this.relayEngine.registerTransport(wsTransport);
+          this.webSocketProvider.emitTransportReady(wsTransport);
         }
         wsTransport.handleIncomingRelay(relayMsg);
         this.notifyDiagnostics();
@@ -195,6 +261,11 @@ export class NetworkCoordinator {
     this.isStarted = false;
     this.signalingState = 'DISCONNECTED';
 
+    for (const provider of this.providers) {
+      provider.stop();
+    }
+    this.multiTransportManager.closeAll();
+
     // Clear fallback timers
     for (const timer of this.fallbackTimers.values()) {
       clearTimeout(timer);
@@ -205,16 +276,13 @@ export class NetworkCoordinator {
       this.signalingClient.disconnect();
       this.signalingClient = null;
     }
+    this.webRtcProvider.setSignalingClient(null);
 
-    for (const [peerId, pc] of this.peerConnections) {
+    for (const ws of this.webSocketTransports.values()) {
       try {
-        pc.close();
+        ws.close();
       } catch (_) {}
-      this.clearPendingCandidates(peerId);
     }
-    this.peerConnections.clear();
-    this.dataChannels.clear();
-    this.webRtcTransports.clear();
     this.webSocketTransports.clear();
     this.discoveredPeers.clear();
 
@@ -228,14 +296,8 @@ export class NetworkCoordinator {
     for (const peer of peers) {
       if (peer.peerId !== this.deviceId) {
         this.discoveredPeers.set(peer.peerId, peer);
-        // Deterministic collision breaker: lower ID initiates
-        if (this.deviceId < peer.peerId) {
-          this.log('info', `Deterministic initiator: ${this.deviceId} < ${peer.peerId}. Initiating WebRTC.`);
-          this.initiatePeerConnection(peer.peerId);
-        } else {
-          this.log('info', `Deterministic callee: awaiting offer from ${peer.peerId}`);
-          this.scheduleFallbackTimer(peer.peerId);
-        }
+        this.scheduleFallbackTimer(peer.peerId);
+        this.webRtcProvider.handlePeerDiscovered(peer.peerId);
       }
     }
     this.notifyDiagnostics();
@@ -244,13 +306,8 @@ export class NetworkCoordinator {
   private handlePeerJoined(peer: PeerDescriptor): void {
     if (peer.peerId !== this.deviceId) {
       this.discoveredPeers.set(peer.peerId, peer);
-      if (this.deviceId < peer.peerId) {
-        this.log('info', `Deterministic initiator for newly joined peer: ${this.deviceId} < ${peer.peerId}`);
-        this.initiatePeerConnection(peer.peerId);
-      } else {
-        this.log('info', `Deterministic callee for newly joined peer: awaiting offer from ${peer.peerId}`);
-        this.scheduleFallbackTimer(peer.peerId);
-      }
+      this.scheduleFallbackTimer(peer.peerId);
+      this.webRtcProvider.handlePeerDiscovered(peer.peerId);
     }
     this.notifyDiagnostics();
   }
@@ -264,8 +321,8 @@ export class NetworkCoordinator {
 
     const timer = setTimeout(() => {
       this.fallbackTimers.delete(remotePeerId);
-      const existingRtc = this.webRtcTransports.get(remotePeerId);
-      if (!existingRtc || !existingRtc.isOpen()) {
+      const isRtcOpen = this.webRtcProvider.isTransportOpen(remotePeerId);
+      if (!isRtcOpen) {
         this.log('info', `WebRTC connection pending for ${remotePeerId}. Activating local WebSocket fallback transport.`);
         this.activateWebSocketFallback(remotePeerId);
       }
@@ -284,239 +341,8 @@ export class NetworkCoordinator {
     });
 
     this.webSocketTransports.set(remotePeerId, wsTransport);
-    this.relayEngine.registerTransport(wsTransport);
+    this.webSocketProvider.emitTransportReady(wsTransport);
     this.notifyDiagnostics();
-  }
-
-  // ─── WEBRTC CONNECTION INITIATION (OFFERER) ────────────────────────────────
-
-  private async initiatePeerConnection(remotePeerId: string): Promise<void> {
-    if (this.peerConnections.has(remotePeerId)) return;
-    if (typeof RTCPeerConnection === 'undefined') {
-      this.log('warn', 'RTCPeerConnection not available in this browser environment');
-      this.activateWebSocketFallback(remotePeerId);
-      return;
-    }
-
-    try {
-      this.scheduleFallbackTimer(remotePeerId);
-
-      const pc = new RTCPeerConnection(DEFAULT_ICE_SERVERS);
-      this.peerConnections.set(remotePeerId, pc);
-
-      const channel = pc.createDataChannel('nexus-relay');
-      this.dataChannels.set(remotePeerId, channel);
-
-      const transport = new WebRtcTransport({
-        remotePeerId,
-        peerConnection: pc,
-        dataChannel: channel,
-      });
-      this.webRtcTransports.set(remotePeerId, transport);
-
-      const onChannelOpen = () => {
-        this.log('info', `✔ WebRTC DataChannel OPEN with ${remotePeerId}`);
-        this.clearFallbackTimer(remotePeerId);
-        this.relayEngine.registerTransport(transport);
-        this.notifyDiagnostics();
-      };
-
-      if (channel.readyState === 'open') {
-        onChannelOpen();
-      } else {
-        channel.onopen = onChannelOpen;
-      }
-
-      channel.onclose = () => {
-        this.log('warn', `WebRTC DataChannel closed with ${remotePeerId}`);
-        this.notifyDiagnostics();
-      };
-
-      channel.onerror = (err) => {
-        this.log('error', `WebRTC DataChannel error with ${remotePeerId}: ${JSON.stringify(err)}`);
-        this.notifyDiagnostics();
-      };
-
-      pc.onicecandidate = (event) => {
-        if (event.candidate && this.signalingClient) {
-          this.signalingClient.sendCandidate(remotePeerId, event.candidate.toJSON());
-        }
-      };
-
-      pc.oniceconnectionstatechange = () => {
-        this.log('info', `ICE state with ${remotePeerId}: ${pc.iceConnectionState}`);
-        this.notifyDiagnostics();
-      };
-
-      pc.onconnectionstatechange = () => {
-        this.log('info', `Connection state with ${remotePeerId}: ${pc.connectionState}`);
-        if (pc.connectionState === 'connected') {
-          this.clearFallbackTimer(remotePeerId);
-        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-          this.closePeer(remotePeerId);
-        }
-        this.notifyDiagnostics();
-      };
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      if (this.signalingClient) {
-        this.log('info', `Sending WebRTC OFFER to ${remotePeerId}`);
-        this.signalingClient.sendOffer(remotePeerId, offer);
-      }
-      this.notifyDiagnostics();
-    } catch (err: any) {
-      this.log('error', `Error creating offer to ${remotePeerId}: ${err?.message}`);
-      this.lastError = err?.message || 'Offer creation failed';
-      this.closePeer(remotePeerId);
-    }
-  }
-
-  // ─── WEBRTC CONNECTION HANDLING (CALLEE) ───────────────────────────────────
-
-  private async handleOffer(fromPeerId: string, sdp: RTCSessionDescriptionInit): Promise<void> {
-    if (typeof RTCPeerConnection === 'undefined') {
-      this.activateWebSocketFallback(fromPeerId);
-      return;
-    }
-
-    try {
-      this.scheduleFallbackTimer(fromPeerId);
-
-      let pc = this.peerConnections.get(fromPeerId);
-      if (pc) {
-        pc.close();
-      }
-
-      pc = new RTCPeerConnection(DEFAULT_ICE_SERVERS);
-      this.peerConnections.set(fromPeerId, pc);
-
-      const transport = new WebRtcTransport({
-        remotePeerId: fromPeerId,
-        peerConnection: pc,
-      });
-      this.webRtcTransports.set(fromPeerId, transport);
-
-      pc.ondatachannel = (event) => {
-        const channel = event.channel;
-        this.dataChannels.set(fromPeerId, channel);
-        transport.attachChannel(channel);
-
-        const onChannelOpen = () => {
-          this.log('info', `✔ WebRTC Callee DataChannel OPEN with ${fromPeerId}`);
-          this.clearFallbackTimer(fromPeerId);
-          this.relayEngine.registerTransport(transport);
-          this.notifyDiagnostics();
-        };
-
-        if (channel.readyState === 'open') {
-          onChannelOpen();
-        } else {
-          channel.onopen = onChannelOpen;
-        }
-
-        channel.onclose = () => {
-          this.log('warn', `WebRTC Callee DataChannel closed with ${fromPeerId}`);
-          this.notifyDiagnostics();
-        };
-
-        channel.onerror = (err) => {
-          this.log('error', `WebRTC Callee DataChannel error with ${fromPeerId}: ${JSON.stringify(err)}`);
-          this.notifyDiagnostics();
-        };
-      };
-
-      pc.onicecandidate = (event) => {
-        if (event.candidate && this.signalingClient) {
-          this.signalingClient.sendCandidate(fromPeerId, event.candidate.toJSON());
-        }
-      };
-
-      pc.oniceconnectionstatechange = () => {
-        this.log('info', `ICE state with ${fromPeerId}: ${pc.iceConnectionState}`);
-        this.notifyDiagnostics();
-      };
-
-      pc.onconnectionstatechange = () => {
-        this.log('info', `Connection state with ${fromPeerId}: ${pc.connectionState}`);
-        if (pc.connectionState === 'connected') {
-          this.clearFallbackTimer(fromPeerId);
-        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-          this.closePeer(fromPeerId);
-        }
-        this.notifyDiagnostics();
-      };
-
-      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-      await this.drainPendingCandidates(fromPeerId, pc);
-
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      if (this.signalingClient) {
-        this.log('info', `Sending WebRTC ANSWER to ${fromPeerId}`);
-        this.signalingClient.sendAnswer(fromPeerId, answer);
-      }
-      this.notifyDiagnostics();
-    } catch (err: any) {
-      this.log('error', `Error responding to offer from ${fromPeerId}: ${err?.message}`);
-      this.lastError = err?.message || 'Answer creation failed';
-      this.closePeer(fromPeerId);
-    }
-  }
-
-  private async handleAnswer(fromPeerId: string, sdp: RTCSessionDescriptionInit): Promise<void> {
-    const pc = this.peerConnections.get(fromPeerId);
-    if (!pc) return;
-
-    try {
-      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-      await this.drainPendingCandidates(fromPeerId, pc);
-      this.log('info', `Remote description set from ANSWER of ${fromPeerId}`);
-      this.notifyDiagnostics();
-    } catch (err: any) {
-      this.log('error', `Error setting remote description from ${fromPeerId}: ${err?.message}`);
-      this.lastError = err?.message || 'Remote description failed';
-    }
-  }
-
-  // ─── ICE CANDIDATE QUEUE ───────────────────────────────────────────────────
-
-  private async handleCandidate(fromPeerId: string, candidate: RTCIceCandidateInit): Promise<void> {
-    const pc = this.peerConnections.get(fromPeerId);
-
-    // Buffer candidate if remoteDescription is not yet set
-    if (!pc || !pc.remoteDescription) {
-      const queue = this.pendingCandidates.get(fromPeerId) || [];
-      queue.push(candidate);
-      this.pendingCandidates.set(fromPeerId, queue);
-      return;
-    }
-
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(candidate));
-    } catch (err: any) {
-      this.log('warn', `Error adding ICE candidate from ${fromPeerId}: ${err?.message}`);
-    }
-  }
-
-  private async drainPendingCandidates(peerId: string, pc: RTCPeerConnection): Promise<void> {
-    const queue = this.pendingCandidates.get(peerId);
-    if (!queue || queue.length === 0) return;
-    this.pendingCandidates.delete(peerId);
-
-    for (const candidate of queue) {
-      try {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch (err: any) {
-        this.log('warn', `Error draining ICE candidate for ${peerId}: ${err?.message}`);
-      }
-    }
-  }
-
-  private clearPendingCandidates(peerId: string): void {
-    this.pendingCandidates.delete(peerId);
   }
 
   private clearFallbackTimer(peerId: string): void {
@@ -529,17 +355,7 @@ export class NetworkCoordinator {
 
   private closePeer(peerId: string): void {
     this.clearFallbackTimer(peerId);
-    this.clearPendingCandidates(peerId);
-
-    const pc = this.peerConnections.get(peerId);
-    if (pc) {
-      try {
-        pc.close();
-      } catch (_) {}
-      this.peerConnections.delete(peerId);
-    }
-    this.dataChannels.delete(peerId);
-    this.webRtcTransports.delete(peerId);
+    this.webRtcProvider.closePeer(peerId);
 
     const ws = this.webSocketTransports.get(peerId);
     if (ws) {
@@ -547,6 +363,7 @@ export class NetworkCoordinator {
       this.webSocketTransports.delete(peerId);
     }
 
+    this.multiTransportManager.removeTransport(peerId);
     this.relayEngine.unregisterPeer(peerId);
     this.notifyDiagnostics();
   }
@@ -557,18 +374,20 @@ export class NetworkCoordinator {
     const peerDiagnostics: PeerConnectionDiagnostic[] = [];
     const allKnownPeerIds = new Set<string>([
       ...this.discoveredPeers.keys(),
-      ...this.peerConnections.keys(),
+      ...this.webRtcProvider.getActivePeerIds(),
       ...this.webSocketTransports.keys(),
+      ...this.multiTransportManager.getAllPeerIds(),
     ]);
 
     for (const peerId of allKnownPeerIds) {
-      const pc = this.peerConnections.get(peerId);
-      const dc = this.dataChannels.get(peerId);
-      const rtcTransport = this.webRtcTransports.get(peerId);
+      const rtcDiag = this.webRtcProvider.getPeerDiagnostic(peerId);
       const wsTransport = this.webSocketTransports.get(peerId);
+      const availableTransports = this.multiTransportManager.getAvailableTransportTypes(peerId);
+      const preferred = this.multiTransportManager.getPreferredTransport(peerId);
+      const health = this.multiTransportManager.getAllHealth(peerId);
 
-      let transportType: 'webrtc' | 'websocket' | 'none' = 'none';
-      if (rtcTransport && rtcTransport.isOpen()) {
+      let transportType: TransportType | 'none' = 'none';
+      if (rtcDiag && rtcDiag.isOpen) {
         transportType = 'webrtc';
       } else if (wsTransport && wsTransport.isOpen()) {
         transportType = 'websocket';
@@ -576,11 +395,14 @@ export class NetworkCoordinator {
 
       peerDiagnostics.push({
         peerId,
-        connectionState: pc ? pc.connectionState : 'unsupported',
-        iceConnectionState: pc ? pc.iceConnectionState : 'unsupported',
-        dataChannelState: dc ? dc.readyState : 'none',
+        connectionState: rtcDiag ? rtcDiag.connectionState : 'unsupported',
+        iceConnectionState: rtcDiag ? rtcDiag.iceConnectionState : 'unsupported',
+        dataChannelState: rtcDiag ? rtcDiag.dataChannelState : 'none',
         transportType,
         updatedAt: Date.now(),
+        availableTransports,
+        preferredTransport: preferred ? preferred.transportType : 'none',
+        health,
       });
     }
 
