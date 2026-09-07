@@ -20,6 +20,8 @@ import type { Incident } from '../../shared/types.ts';
 import { MockStorageAdapter } from '../mockStorageAdapter.ts';
 import { RelayEngine } from '../relayEngine.ts';
 
+declare const process: { exit(code?: number): void; execPath: string };
+
 /**
  * Direct in-memory simulated paired transport for headless testing
  */
@@ -136,9 +138,9 @@ async function runRelayTests() {
     // Assert Peer B received and stored the incident
     const storedAtB = storageB.getLocalIncident('inc-p0-001');
     assert.ok(storedAtB, 'Peer B must have persisted the incident');
-    assert.strictEqual(storedAtB.incidentId, 'inc-p0-001');
-    assert.strictEqual(storedAtB.priority, 'P0');
-    assert.strictEqual(storedAtB.hopCount, 1, 'Hop count should be incremented to 1');
+    assert.strictEqual(storedAtB!.incidentId, 'inc-p0-001');
+    assert.strictEqual(storedAtB!.priority, 'P0');
+    assert.strictEqual(storedAtB!.hopCount, 1, 'Hop count should be incremented to 1');
 
     // Assert Peer A received ACK and marked incident as relayed
     const updatedAtA = storageA.getLocalIncident('inc-p0-001');
@@ -191,7 +193,7 @@ async function runRelayTests() {
     // Verify stored at B with hopCount = 1
     const atB = storageB.getLocalIncident('inc-multi-hop-001');
     assert.ok(atB, 'Incident must be stored at B');
-    assert.strictEqual(atB.hopCount, 1);
+    assert.strictEqual(atB!.hopCount, 1);
 
     // 2. Peer A disconnects (Store-Carry-Forward)
     tA.close();
@@ -210,7 +212,7 @@ async function runRelayTests() {
     // Verify stored at C with hopCount = 2
     const atC = storageC.getLocalIncident('inc-multi-hop-001');
     assert.ok(atC, 'Incident must be stored at C via multi-hop');
-    assert.strictEqual(atC.hopCount, 2, 'Hop count at C must be 2');
+    assert.strictEqual(atC!.hopCount, 2, 'Hop count at C must be 2');
 
     tB2.close();
     console.log('  ✔ Passed: A -> B -> C multi-hop relay preserved data and incremented hopCount to 2.');

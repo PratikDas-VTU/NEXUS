@@ -15,5 +15,5 @@
     "isolatedModules": true
   },
   "include": ["shared/**/*", "networking/**/*"],
-  "exclude": ["node_modules", "dist", "frontend", "backend/data", "tests"]
+  "exclude": ["node_modules", "dist", "frontend", "backend/data", "tests", "networking/test"]
 }
