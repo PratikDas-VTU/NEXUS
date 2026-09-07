@@ -57,7 +57,9 @@ export interface EndpointListenerCallbacks {
   onConnectionResult?: (
     endpointId: string,
     status: NativeConnectionStatus,
-    message?: string
+    message?: string,
+    statusCode?: number,
+    statusDescription?: string
   ) => void;
   onPayloadReceived?: (endpointId: string, payload: string) => void;
   onDisconnected?: (endpointId: string, reason?: string) => void;
@@ -121,8 +123,9 @@ export interface INativeMeshBridge {
   /**
    * Requests or accepts a connection to a discovered endpoint.
    * @param endpointId Target endpoint identifier
+   * @param deviceName Optional local device name / identifier to identify self during handshake
    */
-  connect(endpointId: string): Promise<void>;
+  connect(endpointId: string, deviceName?: string): Promise<void>;
 
   /**
    * Transmits a serialized payload string (e.g. RelayMessage JSON) to a connected endpoint.
@@ -157,7 +160,9 @@ export interface INativeMeshBridge {
   onConnectionResult?: (
     endpointId: string,
     status: NativeConnectionStatus,
-    message?: string
+    message?: string,
+    statusCode?: number,
+    statusDescription?: string
   ) => void;
 
   /** Fired when an incoming payload string is received from a connected endpoint */
@@ -202,7 +207,7 @@ export class NoopNativeMeshBridge implements INativeMeshBridge {
 
   public async stopDiscovery(): Promise<void> {}
 
-  public async connect(_endpointId: string): Promise<void> {}
+  public async connect(_endpointId: string, _deviceName?: string): Promise<void> {}
 
   public async sendPayload(_endpointId: string, _payload: string): Promise<void> {
     throw new Error('[NoopNativeMeshBridge] Native mesh hardware not available in this environment');

@@ -383,6 +383,7 @@ export class RelayEngine implements INetworkRelayService {
       connectedAt: p.connectedAt,
       lastPingAt: p.lastActiveAt,
       relayedCount: p.relayedCount,
+      handshakeState: p.state,
     }));
 
     return {
@@ -432,6 +433,18 @@ export class RelayEngine implements INetworkRelayService {
     }
     this.isSignalingOnline = false;
     this.notifyStatusChange();
+  }
+
+  public getPeerSession(peerId: string): ActivePeerSession | undefined {
+    let session = this.activePeers.get(peerId);
+    if (!session) {
+      for (const s of this.activePeers.values()) {
+        if (s.peerDeviceId === peerId) {
+          return s;
+        }
+      }
+    }
+    return session;
   }
 
   public async triggerPeerSync(): Promise<void> {

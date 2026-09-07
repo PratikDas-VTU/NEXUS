@@ -28,7 +28,7 @@ export interface NexusNativePluginInterface {
   stopAdvertising(): Promise<void>;
   startDiscovery(options: { serviceId: string }): Promise<void>;
   stopDiscovery(): Promise<void>;
-  connect(options: { endpointId: string }): Promise<void>;
+  connect(options: { endpointId: string; deviceName?: string }): Promise<void>;
   sendPayload(options: { endpointId: string; payload: string }): Promise<void>;
   disconnect(options: { endpointId: string }): Promise<void>;
   disconnectAll(): Promise<void>;
@@ -50,6 +50,8 @@ export interface NexusNativePluginInterface {
       endpointId: string;
       status: NativeConnectionStatus;
       message?: string;
+      statusCode?: number;
+      statusDescription?: string;
     }) => void
   ): Promise<PluginListenerHandle>;
   addListener(
@@ -76,7 +78,9 @@ export class CapacitorNativeMeshBridge implements INativeMeshBridge {
   public onConnectionResult?: (
     endpointId: string,
     status: NativeConnectionStatus,
-    message?: string
+    message?: string,
+    statusCode?: number,
+    statusDescription?: string
   ) => void;
   public onPayloadReceived?: (endpointId: string, payload: string) => void;
   public onDisconnected?: (endpointId: string, reason?: string) => void;
@@ -210,8 +214,8 @@ export class CapacitorNativeMeshBridge implements INativeMeshBridge {
     }
   }
 
-  public async connect(endpointId: string): Promise<void> {
-    await this.plugin.connect({ endpointId });
+  public async connect(endpointId: string, deviceName?: string): Promise<void> {
+    await this.plugin.connect({ endpointId, deviceName });
   }
 
   public async sendPayload(endpointId: string, payload: string): Promise<void> {
@@ -274,9 +278,9 @@ export class CapacitorNativeMeshBridge implements INativeMeshBridge {
         }
       });
       const p4 = this.plugin.addListener('connectionResult', (data) => {
-        this.onConnectionResult?.(data.endpointId, data.status, data.message);
+        this.onConnectionResult?.(data.endpointId, data.status, data.message, data.statusCode, data.statusDescription);
         for (const l of this.customListeners) {
-          l.onConnectionResult?.(data.endpointId, data.status, data.message);
+          l.onConnectionResult?.(data.endpointId, data.status, data.message, data.statusCode, data.statusDescription);
         }
       });
       const p5 = this.plugin.addListener('payloadReceived', (data) => {

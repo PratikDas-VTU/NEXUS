@@ -188,8 +188,8 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
                 : nearby.isStopping
                 ? 'STOPPING SCAN...'
                 : nearby.isScanning
-                ? 'STOP SCAN (SCANNING ACTIVE)'
-                : 'SCAN NEARBY (DISCOVER & BROADCAST)'}
+                ? 'DIAGNOSTIC: STOP SCAN'
+                : 'DIAGNOSTIC: SCAN NEARBY'}
             </span>
           </button>
         </div>
@@ -311,6 +311,10 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
           </div>
         ) : (
           <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#162030]/80 border border-[#2b3a55]/60 text-[11px] text-[#aac7ff]">
+              <span className="material-symbols-outlined text-[15px] text-[#3e90ff] shrink-0">hub</span>
+              <span>Autonomous Mesh Active: Nodes auto-connect upon discovery using deterministic tie-breaking.</span>
+            </div>
             {nearby.nodes.map((node) => {
               const isConnected = node.status === 'CONNECTED';
               const isConnecting = node.status === 'CONNECTING';
@@ -353,19 +357,34 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
                     </div>
 
                     {/* Node Status Badge */}
-                    <span
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
-                        isConnected
-                          ? 'bg-[#142e1d] text-[#47e266] border border-[#2f6f3a]'
-                          : isConnecting
-                          ? 'bg-[#1b253b] text-[#aac7ff] border border-[#2d4370] animate-pulse'
-                          : node.status === 'DISCONNECTED'
-                          ? 'bg-[#222] text-[#8b91a0] border border-[#333]'
-                          : 'bg-[#2b1f14] text-[#ffb84e] border border-[#554019]'
-                      }`}
-                    >
-                      {node.status}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {isConnected && node.handshakeState && (
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold ${
+                            node.handshakeState === 'SYNCED'
+                              ? 'bg-[#142e1d] text-[#47e266] border border-[#2f6f3a]'
+                              : 'bg-[#1e2738] text-[#aac7ff] border border-[#354c75]'
+                          }`}
+                        >
+                          {node.handshakeState === 'SYNCED'
+                            ? `✔ SYNCED (${node.relayedCount || 0})`
+                            : node.handshakeState}
+                        </span>
+                      )}
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                          isConnected
+                            ? 'bg-[#142e1d] text-[#47e266] border border-[#2f6f3a]'
+                            : isConnecting
+                            ? 'bg-[#1b253b] text-[#aac7ff] border border-[#2d4370] animate-pulse'
+                            : node.status === 'DISCONNECTED'
+                            ? 'bg-[#222] text-[#8b91a0] border border-[#333]'
+                            : 'bg-[#2b1f14] text-[#ffb84e] border border-[#554019]'
+                        }`}
+                      >
+                        {node.status}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Actions & Connection Info */}
@@ -394,15 +413,21 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
                           </button>
                         </>
                       ) : isConnecting ? (
-                        <span className="text-[11px] text-[#aac7ff] font-medium animate-pulse">
+                        <span className="text-[11px] text-[#aac7ff] font-medium animate-pulse flex items-center gap-1">
+                          <span className="material-symbols-outlined text-[13px] animate-spin">progress_activity</span>
                           Connecting...
                         </span>
                       ) : (
                         <button
                           onClick={() => nearby.connect(node.endpointId)}
-                          className="px-3 py-1 rounded-lg bg-[#3e90ff] hover:bg-[#3478d4] text-white text-[11px] font-bold cursor-pointer transition-all active:scale-95 shadow-xs"
+                          disabled={nearby.nodes.some((n) => n.status === 'CONNECTING')}
+                          className={`px-3 py-1 rounded-lg text-white text-[11px] font-bold transition-all shadow-xs ${
+                            nearby.nodes.some((n) => n.status === 'CONNECTING')
+                              ? 'bg-[#252830] text-[#6b7280] cursor-not-allowed opacity-50'
+                              : 'bg-[#3e90ff] hover:bg-[#3478d4] cursor-pointer active:scale-95'
+                          }`}
                         >
-                          Connect
+                          Manual Connect
                         </button>
                       )}
                     </div>

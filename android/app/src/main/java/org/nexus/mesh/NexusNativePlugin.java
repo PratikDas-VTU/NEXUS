@@ -27,6 +27,7 @@ import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback;
 import com.google.android.gms.nearby.connection.ConnectionResolution;
 import com.google.android.gms.nearby.connection.Connections;
 import com.google.android.gms.nearby.connection.ConnectionsClient;
+import com.google.android.gms.nearby.connection.ConnectionsStatusCodes;
 import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo;
 import com.google.android.gms.nearby.connection.DiscoveryOptions;
 import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback;
@@ -460,19 +461,37 @@ public class NexusNativePlugin extends Plugin {
             return;
         }
 
-        String localName = Build.MODEL != null ? Build.MODEL : "NEXUS-Node";
+        String deviceName = call.getString("deviceName");
+        if (deviceName == null || deviceName.trim().isEmpty()) {
+            deviceName = Build.MODEL != null ? Build.MODEL : "NEXUS-Node";
+        }
+        final String localName = deviceName;
+
+        // Best Practice: Temporarily pause discovery during connection handshake
+        // to free Bluetooth/Wi-Fi radio resources and prevent RF packet contention.
+        if (isDiscovering) {
+            try {
+                Log.i(TAG, "Pausing discovery to facilitate connection handshake to " + endpointId);
+                client.stopDiscovery();
+                isDiscovering = false;
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to pause discovery before connect: " + e.getMessage());
+            }
+        }
 
         client.requestConnection(localName, endpointId, connectionLifecycleCallback)
             .addOnSuccessListener(unused -> {
-                Log.i(TAG, "requestConnection sent to " + endpointId);
+                Log.i(TAG, "requestConnection successfully sent to " + endpointId + " as '" + localName + "'");
                 call.resolve();
             })
             .addOnFailureListener(e -> {
-                if (connectedEndpoints.containsKey(endpointId)) {
+                String errMsg = e.getMessage() != null ? e.getMessage() : "";
+                if (connectedEndpoints.containsKey(endpointId) || errMsg.contains("8003") || errMsg.contains("ALREADY_CONNECTED")) {
+                    Log.i(TAG, "Endpoint " + endpointId + " is already connected or connecting: " + errMsg);
                     call.resolve();
                 } else {
-                    Log.w(TAG, "requestConnection failed to " + endpointId + ": " + e.getMessage());
-                    call.reject("Connection request failed: " + e.getMessage());
+                    Log.w(TAG, "requestConnection failed to " + endpointId + ": " + errMsg);
+                    call.reject("Connection request failed: " + errMsg);
                 }
             });
     }
@@ -480,7 +499,24 @@ public class NexusNativePlugin extends Plugin {
     private final ConnectionLifecycleCallback connectionLifecycleCallback = new ConnectionLifecycleCallback() {
         @Override
         public void onConnectionInitiated(@NonNull String endpointId, @NonNull ConnectionInfo connectionInfo) {
-            Log.i(TAG, "Connection initiated from " + endpointId + " (" + connectionInfo.getEndpointName() + ")");
+            Log.i(TAG, "onConnectionInitiated: endpointId=" + endpointId 
+                + ", endpointName=" + connectionInfo.getEndpointName() 
+                + ", isIncoming=" + connectionInfo.isIncomingConnection()
+                + ", authDigits=" + connectionInfo.getAuthenticationDigits());
+
+            // Also pause discovery on the receiving side if active to ensure the handshake has full radio bandwidth
+            if (isDiscovering) {
+                try {
+                    ConnectionsClient client = getClient();
+                    if (client != null) {
+                        Log.i(TAG, "Pausing discovery on incoming connection handshake from " + endpointId);
+                        client.stopDiscovery();
+                        isDiscovering = false;
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to pause discovery on connectionInitiated: " + e.getMessage());
+                }
+            }
 
             EndpointState state = new EndpointState(endpointId, connectionInfo.getEndpointName(), currentServiceId);
             discoveredEndpoints.put(endpointId, state);
@@ -490,12 +526,13 @@ public class NexusNativePlugin extends Plugin {
             event.put("endpointId", endpointId);
             event.put("endpointName", connectionInfo.getEndpointName());
             event.put("serviceId", currentServiceId);
+            event.put("isIncoming", connectionInfo.isIncomingConnection());
             if (connectionInfo.getAuthenticationDigits() != null) {
                 event.put("authenticationToken", connectionInfo.getAuthenticationDigits());
             }
             notifyListeners("connectionInitiated", event);
 
-            // 2. Deterministic Auto-Accept policy
+            // 2. Deterministic Auto-Accept policy on both sides
             ConnectionsClient client = getClient();
             if (client != null) {
                 client.acceptConnection(endpointId, payloadCallback)
@@ -505,6 +542,8 @@ public class NexusNativePlugin extends Plugin {
                         JSObject res = new JSObject();
                         res.put("endpointId", endpointId);
                         res.put("status", "ERROR");
+                        res.put("statusCode", ConnectionsStatusCodes.STATUS_ERROR);
+                        res.put("statusDescription", "STATUS_ERROR");
                         res.put("message", "Accept failed: " + e.getMessage());
                         notifyListeners("connectionResult", res);
                     });
@@ -513,8 +552,18 @@ public class NexusNativePlugin extends Plugin {
 
         @Override
         public void onConnectionResult(@NonNull String endpointId, @NonNull ConnectionResolution result) {
+            int statusCode = result.getStatus().getStatusCode();
+            String statusDesc = getStatusDescription(statusCode);
+            String statusMsg = result.getStatus().getStatusMessage();
+            Log.i(TAG, "onConnectionResult: endpointId=" + endpointId 
+                + ", isSuccess=" + result.getStatus().isSuccess() 
+                + ", statusCode=" + statusCode + " (" + statusDesc + ")"
+                + (statusMsg != null ? ", statusMessage=" + statusMsg : ""));
+
             JSObject event = new JSObject();
             event.put("endpointId", endpointId);
+            event.put("statusCode", statusCode);
+            event.put("statusDescription", statusDesc);
 
             if (result.getStatus().isSuccess()) {
                 Log.i(TAG, "Connection SUCCESS with " + endpointId);
@@ -528,12 +577,11 @@ public class NexusNativePlugin extends Plugin {
                 event.put("status", "CONNECTED");
                 event.put("message", "Nearby connection established");
             } else {
-                int statusCode = result.getStatus().getStatusCode();
-                Log.w(TAG, "Connection failed with " + endpointId + ", code=" + statusCode);
+                Log.w(TAG, "Connection failed with " + endpointId + ", code=" + statusCode + " (" + statusDesc + ")");
                 connectedEndpoints.remove(endpointId);
 
                 event.put("status", "REJECTED");
-                event.put("message", "Connection failed (status code " + statusCode + ")");
+                event.put("message", "Connection failed: " + statusDesc + " (code " + statusCode + ")");
             }
             notifyListeners("connectionResult", event);
         }
@@ -550,6 +598,45 @@ public class NexusNativePlugin extends Plugin {
             notifyListeners("disconnected", event);
         }
     };
+
+    private String getStatusDescription(int statusCode) {
+        switch (statusCode) {
+            case 8000:
+                return "STATUS_OK";
+            case 8001:
+                return "STATUS_INTERNAL_ERROR";
+            case 8002:
+                return "STATUS_NETWORK_NOT_CONNECTED";
+            case 8003:
+                return "STATUS_ALREADY_CONNECTED_TO_ENDPOINT";
+            case 8004:
+                return "STATUS_CONNECTION_REJECTED";
+            case 8005:
+                return "STATUS_NOT_CONNECTED_TO_ENDPOINT";
+            case 8007:
+                return "STATUS_BLUETOOTH_ERROR";
+            case 8008:
+                return "STATUS_ALREADY_HAVE_ACTIVE_STRATEGY";
+            case 8009:
+                return "STATUS_OUT_OF_ORDER_API_CALL";
+            case 8010:
+                return "STATUS_UNSUPPORTED_PAYLOAD_TYPE_FOR_STRATEGY";
+            case 8011:
+                return "STATUS_ENDPOINT_IO_ERROR";
+            case 8012:
+                return "STATUS_ENDPOINT_UNKNOWN";
+            case 8013:
+                return "STATUS_ALREADY_DISCOVERING";
+            case 8014:
+                return "STATUS_ALREADY_ADVERTISING";
+            case 8015:
+                return "STATUS_ERROR";
+            case 8016:
+                return "STATUS_PAYLOAD_IO_ERROR";
+            default:
+                return "STATUS_CODE_" + statusCode;
+        }
+    }
 
     // ─── 6. PAYLOAD PASSING ─────────────────────────────────────────────────
 

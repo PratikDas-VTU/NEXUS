@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import type { IFrontendIncidentService, INetworkRelayService, RelayNetworkStatus } from '../../../shared/interfaces';
 import type { Incident, DraftIncident, IncidentStatus } from '../../../shared/types';
 import { FrontendIncidentService } from '../../../backend/data/incidentService';
@@ -8,6 +8,7 @@ import { getDeviceId, getSynchronousDeviceId } from '../../../backend/data/devic
 import { RelayEngine } from '../../../networking/relayEngine';
 import { incidentToViewModel } from '../services/incidentMapper';
 import type { IncidentItem } from '../types';
+import { NearbyMeshController } from '../services/nearbyMeshController';
 
 import { NetworkCoordinator, NetworkDiagnostics } from '../services/networkCoordinator';
 import { getSignalingUrl } from '../services/api/config';
@@ -34,6 +35,7 @@ interface ServiceContextValue {
   incidentService: IFrontendIncidentService;
   networkService: INetworkRelayService;
   coordinator: NetworkCoordinator;
+  meshController: NearbyMeshController;
   incidents: IncidentItem[];
   rawIncidents: Incident[];
   outboxCount: number;
@@ -64,7 +66,7 @@ interface ServiceContextValue {
   testBluetooth: () => Promise<{ success: boolean; deviceName?: string; error?: string }>;
 }
 
-const ServiceContext = createContext<ServiceContextValue | null>(null);
+export const ServiceContext = createContext<ServiceContextValue | null>(null);
 
 export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Support multi-node testing via URL parameter (e.g. ?node=A or ?node=B)
@@ -119,9 +121,27 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       deviceId,
       relayEngine: networkService,
       signalingUrl: getSignalingUrl(),
-      enableNativeTransport: true,
+      enableNativeTransport: false, // NearbyMeshController owns native Nearby Connections
     });
   }, [deviceId, networkService]);
+
+  // Safeguard 1: SINGLE STABLE MESH CONTROLLER for the lifetime of ServiceProvider
+  const meshControllerRef = useRef<NearbyMeshController | null>(null);
+  if (!meshControllerRef.current) {
+    meshControllerRef.current = new NearbyMeshController({
+      localDeviceId: deviceId,
+      relayEngine: networkService,
+      multiTransportManager: coordinator.getMultiTransportManager(),
+      autoConnect: true,
+    });
+  }
+  const meshController = meshControllerRef.current;
+
+  // Keep meshController dynamically wired if services update
+  useEffect(() => {
+    meshController.setRelayEngine(networkService);
+    meshController.setMultiTransportManager(coordinator.getMultiTransportManager());
+  }, [meshController, networkService, coordinator]);
 
   const [networkStatus, setNetworkStatus] = useState<RelayNetworkStatus>(networkService.getStatus());
   const [networkDiagnostics, setNetworkDiagnostics] = useState<NetworkDiagnostics>(() => coordinator.getDiagnostics());
@@ -134,11 +154,12 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         if (id !== deviceId) {
           setDeviceId(id);
           coordinator.updateDeviceId(id);
+          meshController.updateLocalDeviceId(id);
         }
       }
     }
     initDevice();
-  }, [database, nodeParam, coordinator, deviceId]);
+  }, [database, nodeParam, coordinator, meshController, deviceId]);
 
   const refreshOutboxCount = useCallback(async () => {
     try {
@@ -251,6 +272,30 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       coordinator.stop().catch(() => {});
     };
   }, [coordinator]);
+
+  // Autonomous Mesh Boot: starts advertising and discovery as soon as app launches
+  useEffect(() => {
+    let isMounted = true;
+    async function startAutonomousMesh() {
+      try {
+        const pre = await meshController.checkPrerequisites();
+        if (pre.ready && isMounted) {
+          console.log('[ServiceProvider] Nearby hardware ready. Starting autonomous mesh advertising & discovery...');
+          await meshController.startScan();
+        } else {
+          console.log('[ServiceProvider] Mesh prerequisites status:', pre.state);
+        }
+      } catch (err) {
+        console.warn('[ServiceProvider] Failed to start autonomous mesh:', err);
+      }
+    }
+    startAutonomousMesh();
+
+    return () => {
+      isMounted = false;
+      meshController.destroy();
+    };
+  }, [meshController]);
 
   // Refresh hardware permissions truthfully
   const refreshPermissions = useCallback(async () => {
@@ -392,12 +437,19 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const createIncident = async (draft: DraftIncident): Promise<Incident> => {
     const inc = await incidentService.createIncident(draft);
     await refreshIncidents();
+    // Trigger immediate peer synchronization across all active transports (Nearby + WebRTC + WebSocket)
+    networkService.triggerPeerSync().catch((err) => {
+      console.warn('[ServiceProvider] Peer sync after incident creation failed:', err);
+    });
     return inc;
   };
 
   const updateIncidentStatus = async (id: string, newStatus: IncidentStatus): Promise<void> => {
     await incidentService.updateIncidentStatus(id, newStatus);
     await refreshIncidents();
+    networkService.triggerPeerSync().catch((err) => {
+      console.warn('[ServiceProvider] Peer sync after incident update failed:', err);
+    });
   };
 
   const reconnectSignaler = useCallback(async (customUrl?: string) => {
@@ -409,6 +461,7 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     incidentService,
     networkService,
     coordinator,
+    meshController,
     incidents,
     rawIncidents,
     outboxCount,

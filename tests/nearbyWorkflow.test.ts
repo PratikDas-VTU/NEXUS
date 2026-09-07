@@ -368,7 +368,7 @@ describe('NearbyMeshController (Phase 6 — Step 5B.5 UI Workflow)', () => {
     });
 
     await controller.connect('ep-phone-b');
-    expect(mockBridge.connect).toHaveBeenCalledWith('ep-phone-b');
+    expect(mockBridge.connect).toHaveBeenCalledWith('ep-phone-b', localId);
     expect(controller.nodes[0].status).toBe('CONNECTING');
 
     await controller.disconnect('ep-phone-b');
@@ -516,5 +516,112 @@ describe('NearbyMeshController (Phase 6 — Step 5B.5 UI Workflow)', () => {
     expect(controller.discovery).toBe(false);
     expect(controller.preflightState).toBe('BROWSER_UNSUPPORTED');
     expect(toastMsg).toContain('WebRTC & WebSocket');
+  });
+
+  it('23. 20-second connection timeout resets node to DISCONNECTED with error', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new NearbyMeshController({
+        localDeviceId: localId,
+        bridge: mockBridge,
+      });
+      await controller.startScan();
+
+      mockBridge.triggerFound({
+        endpointId: 'ep-phone-b',
+        endpointName: 'Phone-B',
+        serviceId: 'nexus-mesh-v1',
+      });
+
+      await controller.connect('ep-phone-b');
+      expect(controller.nodes[0].status).toBe('CONNECTING');
+
+      // Fast forward 20 seconds
+      vi.advanceTimersByTime(20000);
+
+      expect(controller.nodes[0].status).toBe('DISCONNECTED');
+      expect(controller.nodes[0].connectionError).toContain('timed out (20s)');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('24. prevents redundant simultaneous connection requests to an in-flight node', async () => {
+    const controller = new NearbyMeshController({
+      localDeviceId: localId,
+      bridge: mockBridge,
+    });
+    await controller.startScan();
+
+    mockBridge.triggerFound({
+      endpointId: 'ep-phone-b',
+      endpointName: 'Phone-B',
+      serviceId: 'nexus-mesh-v1',
+    });
+
+    await controller.connect('ep-phone-b');
+    expect(mockBridge.connect).toHaveBeenCalledTimes(1);
+
+    // Second connect attempt while CONNECTING should be ignored
+    await controller.connect('ep-phone-b');
+    expect(mockBridge.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('25. incoming connection correlates with discovered peer by endpointName', async () => {
+    const controller = new NearbyMeshController({
+      localDeviceId: localId,
+      bridge: mockBridge,
+    });
+    await controller.startScan();
+
+    // Peer discovered with advertising ID 'adv-123'
+    mockBridge.triggerFound({
+      endpointId: 'adv-123',
+      endpointName: 'Phone-Peer-Node',
+      serviceId: 'nexus-mesh-v1',
+    });
+    expect(controller.nodes.length).toBe(1);
+    expect(controller.nodes[0].endpointId).toBe('adv-123');
+
+    // Incoming connection arrives with new session ID 'conn-999' from same peer name
+    mockBridge.triggerInitiated({
+      endpointId: 'conn-999',
+      endpointName: 'Phone-Peer-Node',
+      serviceId: 'nexus-mesh-v1',
+    });
+
+    // Should correlate and update the endpoint ID without duplicating
+    expect(controller.nodes.length).toBe(1);
+    expect(controller.nodes[0].endpointId).toBe('conn-999');
+    expect(controller.nodes[0].status).toBe('CONNECTING');
+
+    // Connection result arrives for 'conn-999'
+    mockBridge.triggerResult('conn-999', 'CONNECTED');
+    expect(controller.nodes[0].status).toBe('CONNECTED');
+  });
+
+  it('26. connectionResult failure preserves human-readable status description', async () => {
+    const controller = new NearbyMeshController({
+      localDeviceId: localId,
+      bridge: mockBridge,
+    });
+    await controller.startScan();
+
+    mockBridge.triggerFound({
+      endpointId: 'ep-phone-b',
+      endpointName: 'Phone-B',
+      serviceId: 'nexus-mesh-v1',
+    });
+
+    mockBridge.callbacks.onConnectionResult?.(
+      'ep-phone-b',
+      'REJECTED',
+      'Connection failed: STATUS_BLUETOOTH_ERROR (code 8007)',
+      8007,
+      'STATUS_BLUETOOTH_ERROR'
+    );
+
+    expect(controller.nodes[0].status).toBe('DISCONNECTED');
+    expect(controller.nodes[0].connectionError).toContain('STATUS_BLUETOOTH_ERROR');
   });
 });

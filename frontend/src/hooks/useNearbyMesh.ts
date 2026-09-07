@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useCallback, useContext, useRef } from 'react';
 import {
   NearbyMeshController,
   type NearbyPreflightState,
@@ -6,10 +6,11 @@ import {
   type NearbyNode,
   type NearbyMeshControllerOptions,
 } from '../services/nearbyMeshController';
+import { ServiceContext } from '../context/ServiceContext';
 
 export type { NearbyPreflightState, NearbyNodeStatus, NearbyNode };
 
-export interface UseNearbyMeshOptions extends NearbyMeshControllerOptions {}
+export interface UseNearbyMeshOptions extends Partial<NearbyMeshControllerOptions> {}
 
 export interface UseNearbyMeshResult {
   isScanning: boolean;
@@ -33,10 +34,31 @@ export interface UseNearbyMeshResult {
   requestPermissions: () => Promise<boolean>;
 }
 
-export function useNearbyMesh(options: UseNearbyMeshOptions): UseNearbyMeshResult {
-  const controller = useMemo(() => {
-    return new NearbyMeshController(options);
-  }, [options.localDeviceId, options.serviceId, options.bridge]);
+export function useNearbyMesh(options?: UseNearbyMeshOptions): UseNearbyMeshResult {
+  const ctx = useContext(ServiceContext);
+  const isContextMode = Boolean(ctx?.meshController);
+
+  // If inside ServiceProvider, use the application-level singleton meshController
+  // Otherwise, create an isolated fallback controller (for standalone unit tests)
+  const fallbackRef = useRef<NearbyMeshController | null>(null);
+  if (!isContextMode && !fallbackRef.current) {
+    fallbackRef.current = new NearbyMeshController({
+      localDeviceId: options?.localDeviceId || 'standalone-node',
+      serviceId: options?.serviceId,
+      bridge: options?.bridge,
+      onToast: options?.onToast,
+      onStateChange: options?.onStateChange,
+    });
+  }
+
+  const controller = isContextMode ? ctx!.meshController : fallbackRef.current!;
+
+  // Dynamically attach toast callback if provided
+  useEffect(() => {
+    if (options?.onToast) {
+      controller.setOnToast(options.onToast);
+    }
+  }, [controller, options?.onToast]);
 
   const [snapshot, setSnapshot] = useState(() => ({
     isScanning: controller.isScanning,
@@ -67,13 +89,20 @@ export function useNearbyMesh(options: UseNearbyMeshOptions): UseNearbyMeshResul
       });
     });
 
-    controller.checkPrerequisites().catch(() => {});
+    if (!isContextMode) {
+      controller.checkPrerequisites().catch(() => {});
+    }
 
     return () => {
       unsub();
-      controller.destroy();
+      // Safeguards 1 & 4: In context mode (real app), DO NOT destroy the controller when NetworkTab unmounts!
+      // Only destroy if this was an isolated fallback controller created for a standalone unit test.
+      if (!isContextMode && fallbackRef.current) {
+        fallbackRef.current.destroy();
+        fallbackRef.current = null;
+      }
     };
-  }, [controller]);
+  }, [controller, isContextMode]);
 
   const startScan = useCallback(() => controller.startScan(), [controller]);
   const stopScan = useCallback(() => controller.stopScan(), [controller]);

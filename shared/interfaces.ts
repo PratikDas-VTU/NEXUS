@@ -116,6 +116,7 @@ export interface ConnectedPeerInfo {
   connectedAt: number;
   lastPingAt: number;
   relayedCount: number;
+  handshakeState?: string;
 }
 
 export interface RelayNetworkStatus {
