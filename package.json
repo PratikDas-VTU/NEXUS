@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "NEXUS — Offline-First Emergency & Community Network",
+  "workspaces": [
+    "frontend"
+  ],
   "scripts": {
     "signaler": "node networking/signaler.js",
     "test:relay": "node --experimental-strip-types networking/test/relay.test.ts",
@@ -11,7 +13,10 @@
     "test:data": "vitest run",
     "test": "node --experimental-strip-types networking/test/relay.test.ts && node --experimental-strip-types networking/test/signaler.test.ts",
     "test:all": "npm run test && vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:frontend": "npm --prefix frontend run build",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "lint:frontend": "npm --prefix frontend run lint"
   },
   "dependencies": {
     "dexie": "^4.4.5",

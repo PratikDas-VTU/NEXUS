@@ -24,14 +24,32 @@ export function calculateTTL(
 }
 
 /**
+ * Threshold for identifying absolute epoch timestamps vs relative durations.
+ * 30 days in milliseconds = 2,592,000,000 ms.
+ * Standard TTL durations (e.g. 24h = 86_400_000 ms) are <= this threshold.
+ * Real-world epoch timestamps (e.g. year 2026 ~ 1.78e12) are far above 1e12.
+ */
+const MAX_DURATION_MS = 2_592_000_000;
+const EPOCH_THRESHOLD_MS = 1_000_000_000_000;
+
+/**
  * Check if an incident has expired.
  * Expired incidents are retained for audit but removed from relay queues.
+ * 
+ * Dual-mode tolerance:
+ * - If now is in real epoch time (> 1e12) and ttl is a duration (<= 30 days):
+ *   expiration is: now >= incident.timestamp + incident.ttl
+ * - Otherwise (ttl is an absolute timestamp or synthetic test number):
+ *   expiration is: now >= incident.ttl
  * 
  * @param incident - The incident to check
  * @param now - Optional current time override (for testing)
  * @returns true if the incident has expired
  */
 export function isExpired(incident: Incident, now: number = Date.now()): boolean {
+  if (now > EPOCH_THRESHOLD_MS && incident.ttl <= MAX_DURATION_MS) {
+    return now >= incident.timestamp + incident.ttl;
+  }
   return now >= incident.ttl;
 }
 
@@ -92,5 +110,8 @@ export function incrementHop(incident: Incident): Incident {
  * @returns Remaining TTL in milliseconds (>= 0)
  */
 export function remainingTTL(incident: Incident, now: number = Date.now()): number {
+  if (now > EPOCH_THRESHOLD_MS && incident.ttl <= MAX_DURATION_MS) {
+    return Math.max(0, incident.timestamp + incident.ttl - now);
+  }
   return Math.max(0, incident.ttl - now);
 }

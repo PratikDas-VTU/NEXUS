@@ -71,6 +71,19 @@ describe('TTL and Hop Utilities', () => {
       const pastIncident = makeIncident({ ttl: Date.now() - 60000 });
       expect(isExpired(pastIncident)).toBe(true);
     });
+
+    it('correctly evaluates canonical relative duration TTL', () => {
+      const now = 1700000050000;
+      // Created at 1700000000000, duration 60000 ms -> expires at 1700000060000 > now (not expired)
+      const validIncident = makeIncident({
+        timestamp: 1700000000000,
+        ttl: 60000,
+      });
+      expect(isExpired(validIncident, now)).toBe(false);
+
+      // Now at 1700000070000 > expires at 1700000060000 (expired)
+      expect(isExpired(validIncident, 1700000070000)).toBe(true);
+    });
   });
 
   describe('isHopBudgetExhausted', () => {

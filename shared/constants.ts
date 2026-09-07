@@ -76,8 +76,12 @@ export function isHigherPriority(a: IncidentPriority, b: IncidentPriority): bool
 
 /**
  * Checks whether an incident has expired based on current epoch time.
+ * Supports both canonical duration TTL and absolute expiration timestamp TTL.
  */
 export function isIncidentExpired(timestamp: number, ttl: number, now: number = Date.now()): boolean {
+  if (ttl > 1_000_000_000_000) {
+    return now >= ttl;
+  }
   return now > timestamp + ttl;
 }
 

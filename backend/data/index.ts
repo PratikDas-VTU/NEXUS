@@ -57,6 +57,10 @@ export {
   getIncidentsByPriority,
   updateIncidentStatus,
   ingestFromPeer,
+  listIncidents,
+  subscribeToIncidents,
+  FrontendIncidentService,
+  frontendIncidentService,
 } from './incidentService';
 
 // --- Deduplication Engine ---

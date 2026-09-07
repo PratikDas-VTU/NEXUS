@@ -8,6 +8,7 @@
 
 import { NexusDatabase, db } from './db';
 import type { Incident, IngestResult } from './types';
+import type { IOfflineStorageAdapter as ISharedOfflineStorageAdapter, IngestionResult } from '../../shared/interfaces';
 import { ingestFromPeer } from './incidentService';
 import { markRelayed as markOutboxRelayed, getPendingRelayItems } from './outboxService';
 import { isExpired, isHopBudgetExhausted } from './ttl';
@@ -47,7 +48,7 @@ export interface IOfflineStorageAdapter {
    * 
    * @param incident - Inbound raw or structured payload
    */
-  ingestRelayedIncident(incident: unknown): Promise<IngestResult>;
+  ingestRelayedIncident(incident: unknown): Promise<AdapterIngestResult>;
 
   /**
    * Updates state when an incident is successfully relayed to a peer.
@@ -76,10 +77,12 @@ export interface IOfflineStorageAdapter {
   getIncidentsByIds(incidentIds: string[]): Promise<Incident[]>;
 }
 
+export type AdapterIngestResult = IngestResult & IngestionResult;
+
 /**
  * OfflineStorageAdapter — Implementation of IOfflineStorageAdapter.
  */
-export class OfflineStorageAdapter implements IOfflineStorageAdapter {
+export class OfflineStorageAdapter implements IOfflineStorageAdapter, ISharedOfflineStorageAdapter {
   private database: NexusDatabase;
 
   constructor(database: NexusDatabase = db) {
@@ -121,8 +124,19 @@ export class OfflineStorageAdapter implements IOfflineStorageAdapter {
     return incidents;
   }
 
-  async ingestRelayedIncident(incident: unknown): Promise<IngestResult> {
-    return ingestFromPeer(incident, this.database);
+  async ingestRelayedIncident(incident: unknown): Promise<AdapterIngestResult> {
+    const res = await ingestFromPeer(incident, this.database);
+    const incidentId =
+      typeof incident === 'object' && incident !== null && 'incidentId' in incident
+        ? String((incident as any).incidentId)
+        : '';
+    return {
+      accepted: res.accepted,
+      incidentId,
+      code: (res as any).code,
+      reason: res.reason,
+      result: res.result,
+    };
   }
 
   async markRelayed(incidentId: string, peerId: string): Promise<void> {

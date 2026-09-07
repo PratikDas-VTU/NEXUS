@@ -7,6 +7,7 @@
 // ============================================================
 
 import { v4 as uuidv4 } from 'uuid';
+import { liveQuery } from 'dexie';
 import { db, NexusDatabase } from './db';
 import type {
   Incident,
@@ -14,12 +15,20 @@ import type {
   IncidentStatus,
   IngestResult,
 } from './types';
-import { validateDraft, validateIncident } from './schema';
+import { PRIORITY_ORDER } from './types';
+import type {
+  IFrontendIncidentService,
+} from '../../shared/interfaces';
+import type {
+  IncidentFilter,
+  IncidentId,
+} from '../../shared/types';
+import { validateDraft, validateIncident, formatValidationErrors } from './schema';
 import { getDeviceId } from './deviceId';
 import { suggestPriority } from './priority';
 import { calculateTTL } from './ttl';
 import { applyIncoming } from './dedup';
-import { addToOutbox } from './outboxService';
+import { addToOutbox, getOutboxCount } from './outboxService';
 
 /**
  * Create a new incident from user input.
@@ -44,9 +53,7 @@ export async function createIncident(
   // Step 1: Validate the draft
   const validation = validateDraft(draft);
   if (!validation.success) {
-    const errors = validation.error.issues
-      .map((i) => `${String(i.path.join('.'))}: ${i.message}`)
-      .join('; ');
+    const errors = formatValidationErrors(validation);
     throw new Error(`Invalid incident draft: ${errors}`);
   }
 
@@ -193,3 +200,104 @@ export async function ingestFromPeer(
 
   return result;
 }
+
+/**
+ * List incidents with optional filtering criteria and sorted by timestamp descending.
+ */
+export async function listIncidents(
+  filter?: IncidentFilter,
+  database: NexusDatabase = db
+): Promise<Incident[]> {
+  let items = await database.incidents.toArray();
+
+  if (filter) {
+    if (filter.type) {
+      items = items.filter((inc) => inc.type === filter.type);
+    }
+    if (filter.priority) {
+      items = items.filter((inc) => inc.priority === filter.priority);
+    }
+    if (filter.status) {
+      items = items.filter((inc) => inc.status === filter.status);
+    }
+    if (filter.minPriority) {
+      const minWeight = PRIORITY_ORDER[filter.minPriority];
+      items = items.filter((inc) => PRIORITY_ORDER[inc.priority] <= minWeight);
+    }
+    if (filter.sinceTimestamp) {
+      items = items.filter((inc) => inc.timestamp >= filter.sinceTimestamp!);
+    }
+    if (filter.originDeviceId) {
+      items = items.filter((inc) => inc.originDeviceId === filter.originDeviceId);
+    }
+  }
+
+  return items.sort((a, b) => b.timestamp - a.timestamp);
+}
+
+/**
+ * Subscribes to database changes for incidents using Dexie liveQuery.
+ */
+export function subscribeToIncidents(
+  callback: (incidents: Incident[]) => void,
+  filter?: IncidentFilter,
+  database: NexusDatabase = db
+): () => void {
+  const observable = liveQuery(() => listIncidents(filter, database));
+  const subscription = observable.subscribe({
+    next: (incidents) => {
+      callback(incidents);
+    },
+    error: (err) => {
+      console.error('[FrontendIncidentService] Subscription error:', err);
+    },
+  });
+
+  return () => {
+    subscription.unsubscribe();
+  };
+}
+
+/**
+ * Concrete implementation of IFrontendIncidentService.
+ */
+export class FrontendIncidentService implements IFrontendIncidentService {
+  private database: NexusDatabase;
+
+  constructor(database: NexusDatabase = db) {
+    this.database = database;
+  }
+
+  async createIncident(draft: DraftIncident): Promise<Incident> {
+    return createIncident(draft, this.database);
+  }
+
+  async getIncident(id: IncidentId): Promise<Incident | undefined> {
+    return getIncident(id, this.database);
+  }
+
+  async listIncidents(filter?: IncidentFilter): Promise<Incident[]> {
+    return listIncidents(filter, this.database);
+  }
+
+  subscribeToIncidents(
+    callback: (incidents: Incident[]) => void,
+    filter?: IncidentFilter
+  ): () => void {
+    return subscribeToIncidents(callback, filter, this.database);
+  }
+
+  async getOutboxCount(): Promise<number> {
+    return getOutboxCount(this.database);
+  }
+
+  async updateIncidentStatus(id: IncidentId, newStatus: IncidentStatus): Promise<void> {
+    return updateIncidentStatus(id, newStatus, this.database);
+  }
+}
+
+/**
+ * Singleton default instance for frontend application consumption.
+ */
+export const frontendIncidentService = new FrontendIncidentService();
+

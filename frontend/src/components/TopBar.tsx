@@ -33,73 +33,74 @@ export const TopBar: React.FC<TopBarProps> = ({
   return (
     <>
       <header className="sticky top-0 w-full z-40 shrink-0 bg-[#131313]/95 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.3)] border-b border-[#201f1f]/80">
-        <div className="h-16 px-4 flex items-center justify-between">
+        <div className="h-12 px-3 flex items-center justify-between">
           {/* Brand logo & title */}
           <div
-            className="flex items-center gap-2 cursor-pointer select-none"
+            className="flex items-center gap-1.5 cursor-pointer select-none shrink-0"
             onClick={() => onSelectTab('feed')}
           >
             <img
               src={currentLogo}
               alt="NEXUS logo"
-              className="h-8 w-auto object-contain transition-opacity hover:opacity-90"
+              className="h-6 w-auto object-contain transition-opacity hover:opacity-90"
             />
             <div className="flex flex-col">
-              <span className="font-bold text-[17px] tracking-tight text-[#e5e2e1] leading-none">
+              <span className="font-bold text-[15px] tracking-tight text-[#e5e2e1] leading-none">
                 NEXUS
               </span>
-              <span className="text-[11px] text-[#aac7ff] leading-none mt-1 font-medium">
+              <span className="text-[10px] text-[#aac7ff] leading-none mt-0.5 font-medium hidden sm:inline">
                 {getTabSubtitle()}
               </span>
             </div>
           </div>
 
-          {/* Right status & avatar */}
-          <div className="flex items-center gap-2">
-            {/* Interactive Internet status button */}
+          {/* Right status & controls */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* Consolidated Authoritative Connection Status */}
+            <button
+              id="nexus-btn-mesh-status"
+              onClick={() => setShowMeshDiagnostics(true)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-medium transition-all cursor-pointer ${
+                isInternetConnected
+                  ? 'bg-[#152a1b] border-[#2f6f3a] text-[#47e266]'
+                  : 'bg-[#1c1b1b] border-[#2a2a2a] text-[#e5e2e1] hover:border-[#353534]'
+              }`}
+              title="Connection status · Click for diagnostics"
+            >
+              <span className={`w-2 h-2 rounded-full ${isInternetConnected ? 'bg-[#47e266]' : 'bg-[#47e266] animate-pulse'}`} />
+              <span className="font-semibold">{isInternetConnected ? 'Online' : 'Offline'}</span>
+              <span className="text-[#8b91a0]">·</span>
+              <span className="text-[#c0c6d6]">Mesh ({peerCount})</span>
+            </button>
+
+            {/* Interactive Internet toggle button */}
             <button
               id="nexus-btn-toggle-internet-topbar"
               onClick={onToggleInternet}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border transition-all cursor-pointer ${
+              className={`w-7 h-7 rounded-full flex items-center justify-center border transition-all cursor-pointer ${
                 isInternetConnected
-                  ? 'bg-[#152a1b] hover:bg-[#1a3824] border-[#2f6f3a] text-[#47e266] shadow-[0_0_10px_rgba(71,226,102,0.15)]'
-                  : 'bg-[#291715] hover:bg-[#381f1b] border-[#5e2b24] text-[#ffb4ab]'
+                  ? 'bg-[#152a1b] hover:bg-[#1a3824] border-[#2f6f3a] text-[#47e266]'
+                  : 'bg-[#201f1f] hover:bg-[#2a2a2a] border-[#2a2a2a] text-[#8b91a0] hover:text-[#e5e2e1]'
               }`}
-              title={isInternetConnected ? 'Internet connection ACTIVE (Cloud Uplink) — Click to disconnect' : 'Zero Internet Mode (Offline Mesh) — Click to turn ON'}
+              title={isInternetConnected ? 'Internet Uplink ON — Click to go Offline' : 'Zero Internet (Offline Mesh) — Click to turn ON'}
             >
               <span className="material-symbols-outlined text-[14px]">
                 {isInternetConnected ? 'wifi' : 'wifi_off'}
               </span>
-              <span className="text-[11px] font-semibold tracking-tight">
-                {isInternetConnected ? 'Online' : 'Offline'}
-              </span>
             </button>
 
-            {/* Interactive Offline mesh badge */}
-            <button
-              id="nexus-btn-mesh-status"
-              onClick={() => setShowMeshDiagnostics(true)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-[#201f1f] hover:bg-[#2a2a2a] backdrop-blur-md border border-[#353534] shadow-inner transition-all cursor-pointer"
-              title="Click to view Live Mesh Diagnostics"
-            >
-              <span className="w-2 h-2 rounded-full bg-[#47e266] animate-pulse" />
-              <span className="text-[11px] text-[#e5e2e1] font-semibold tracking-tight">
-                Mesh: {peerCount}
-              </span>
-            </button>
-
-            {/* User profile avatar pill */}
+            {/* User profile avatar button */}
             <button
               id="nexus-btn-header-profile"
               onClick={() => onSelectTab('device')}
-              className={`w-9 h-9 rounded-full flex items-center justify-center transition-all cursor-pointer ${
+              className={`w-7 h-7 rounded-full flex items-center justify-center transition-all cursor-pointer ${
                 activeTab === 'device'
-                  ? 'ring-2 ring-[#3e90ff] ring-offset-2 ring-offset-[#131313] bg-[#aac7ff]'
+                  ? 'ring-2 ring-[#3e90ff] ring-offset-1 ring-offset-[#131313] bg-[#aac7ff]'
                   : 'bg-[#aac7ff] hover:brightness-110 active:scale-95'
               }`}
               title="Open Device & Profile Settings"
             >
-              <span className="material-symbols-outlined text-[#003064] text-[19px]">
+              <span className="material-symbols-outlined text-[#003064] text-[15px]">
                 person
               </span>
             </button>

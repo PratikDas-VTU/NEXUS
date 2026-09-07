@@ -12,6 +12,8 @@ export interface IncidentItem {
   description: string;
   distance: string;
   location: string;
+  latitude?: number;
+  longitude?: number;
   mediaUrl?: string;
   mediaAlt?: string;
   telemetryTag?: string;

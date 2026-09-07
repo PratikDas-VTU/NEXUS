@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { DeviceProfile } from '../types';
 import { initialDeviceProfile } from '../data/mockData';
 
@@ -6,16 +6,83 @@ interface DeviceTabProps {
   onShowToast: (msg: string) => void;
   isInternetConnected?: boolean;
   onToggleInternet?: () => void;
+  deviceId?: string;
+  outboxCount?: number;
+  localCacheCount?: number;
 }
 
 export const DeviceTab: React.FC<DeviceTabProps> = ({
   onShowToast,
   isInternetConnected = false,
   onToggleInternet,
+  deviceId,
+  outboxCount = 0,
+  localCacheCount = 0,
 }) => {
   const [profile, setProfile] = useState<DeviceProfile>(initialDeviceProfile);
   const [showQrModal, setShowQrModal] = useState<boolean>(false);
   const [testSignalSending, setTestSignalSending] = useState<boolean>(false);
+
+  // Real Hardware Battery Inspection
+  const [batteryData, setBatteryData] = useState<{
+    percent: number | null;
+    isCharging: boolean | null;
+    supported: boolean;
+  }>({ percent: null, isCharging: null, supported: false });
+
+  // Real Storage Manager Inspection (IndexedDB)
+  const [storageEstimate, setStorageEstimate] = useState<{
+    usedKb: number | null;
+    quotaMb: number | null;
+  }>({ usedKb: null, quotaMb: null });
+
+  useEffect(() => {
+    let isMounted = true;
+    if (typeof navigator !== 'undefined' && 'getBattery' in navigator) {
+      (navigator as any)
+        .getBattery()
+        .then((battery: any) => {
+          if (!isMounted) return;
+          setBatteryData({
+            percent: Math.round(battery.level * 100),
+            isCharging: battery.charging,
+            supported: true,
+          });
+          const update = () => {
+            if (isMounted) {
+              setBatteryData({
+                percent: Math.round(battery.level * 100),
+                isCharging: battery.charging,
+                supported: true,
+              });
+            }
+          };
+          battery.addEventListener('levelchange', update);
+          battery.addEventListener('chargingchange', update);
+        })
+        .catch(() => {
+          if (isMounted) {
+            setBatteryData({ percent: null, isCharging: null, supported: false });
+          }
+        });
+    } else {
+      setBatteryData({ percent: null, isCharging: null, supported: false });
+    }
+
+    if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
+      navigator.storage.estimate().then((est) => {
+        if (!isMounted) return;
+        setStorageEstimate({
+          usedKb: est.usage ? Math.round(est.usage / 1024) : null,
+          quotaMb: est.quota ? Math.round(est.quota / (1024 * 1024)) : null,
+        });
+      }).catch(() => {});
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const toggleProtocol = (key: keyof DeviceProfile['protocols']) => {
     const willBeActive = !profile.protocols[key];
@@ -38,10 +105,10 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
   const handleSendTestSignal = () => {
     if (testSignalSending) return;
     setTestSignalSending(true);
-    onShowToast('Transmitting diagnostic beacon on 433MHz / BLE...');
+    onShowToast('Transmitting diagnostic beacon via WebRTC mesh transport...');
     setTimeout(() => {
       setTestSignalSending(false);
-      onShowToast('Emergency test signal received by 4 peer nodes (0 packet loss)');
+      onShowToast('Emergency test signal relayed through local DataChannel');
     }, 1600);
   };
 
@@ -71,8 +138,8 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
               </span>
             </div>
             <span className="text-[12px] text-[#c0c6d6] mt-0.5">{profile.sector}</span>
-            <span className="text-[11px] text-[#8b91a0] font-mono mt-0.5">
-              Node ID: 8F-2A-99 · AES-GCM
+            <span className="text-[11px] text-[#8b91a0] font-mono mt-0.5 truncate max-w-[190px]">
+              Node ID: {deviceId || 'DEV-LOCAL'}
             </span>
           </div>
         </div>
@@ -86,49 +153,70 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
         </button>
       </div>
 
-      {/* Device Health Quick Row */}
+      {/* Device Health Honest Hardware Inspection */}
       <div className="grid grid-cols-2 gap-3 shrink-0">
         {/* Battery Health */}
         <div className="p-4 rounded-2xl bg-[#1c1b1b] border border-[#2a2a2a] flex flex-col gap-2 shadow-sm">
           <div className="flex items-center justify-between text-[#c0c6d6]">
             <span className="text-[12px] font-medium">Battery Level</span>
             <span className="material-symbols-outlined text-[18px] text-[#47e266]">
-              battery_charging_full
+              {batteryData.isCharging ? 'battery_charging_full' : 'battery_std'}
             </span>
           </div>
           <div className="flex items-baseline gap-1.5">
-            <span className="text-[22px] font-bold text-[#e5e2e1]">{profile.batteryPercent}%</span>
-            <span className="text-[11px] text-[#47e266] font-medium">Optimal</span>
+            {batteryData.supported && batteryData.percent !== null ? (
+              <>
+                <span className="text-[22px] font-bold text-[#e5e2e1]">{batteryData.percent}%</span>
+                <span className="text-[11px] text-[#47e266] font-medium">
+                  {batteryData.isCharging ? 'Charging' : 'Optimal'}
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="text-[19px] font-bold text-[#e5e2e1]">N/A</span>
+                <span className="text-[10px] text-[#8b91a0] font-medium">
+                  (Sim: 87%)
+                </span>
+              </>
+            )}
           </div>
           <div className="w-full h-1.5 rounded-full bg-[#2a2a2a] overflow-hidden">
             <div
               className="h-full rounded-full bg-[#47e266]"
-              style={{ width: `${profile.batteryPercent}%` }}
+              style={{ width: `${batteryData.percent ?? 87}%` }}
             />
           </div>
-          <span className="text-[11px] text-[#8b91a0]">{profile.batteryHours}</span>
+          <span className="text-[10px] text-[#8b91a0] leading-tight">
+            {batteryData.supported
+              ? 'Hardware battery API active'
+              : 'Hardware battery API not exposed by browser'}
+          </span>
         </div>
 
-        {/* Storage Vault */}
+        {/* Storage / IndexedDB */}
         <div className="p-4 rounded-2xl bg-[#1c1b1b] border border-[#2a2a2a] flex flex-col gap-2 shadow-sm">
           <div className="flex items-center justify-between text-[#c0c6d6]">
-            <span className="text-[12px] font-medium">Offline Vault</span>
+            <span className="text-[12px] font-medium">Offline Data Core</span>
             <span className="material-symbols-outlined text-[18px] text-[#aac7ff]">
-              inventory_2
+              database
             </span>
           </div>
           <div className="flex items-baseline gap-1">
-            <span className="text-[22px] font-bold text-[#e5e2e1]">{profile.vaultUsedMb}</span>
-            <span className="text-[12px] text-[#c0c6d6]">/ {profile.vaultTotalMb} MB</span>
+            <span className="text-[22px] font-bold text-[#e5e2e1]">
+              {localCacheCount}
+            </span>
+            <span className="text-[11.5px] text-[#c0c6d6]">incidents cached</span>
           </div>
           <div className="w-full h-1.5 rounded-full bg-[#2a2a2a] overflow-hidden">
             <div
               className="h-full rounded-full bg-[#3e90ff]"
-              style={{ width: `${(profile.vaultUsedMb / profile.vaultTotalMb) * 100}%` }}
+              style={{ width: `${Math.min(100, Math.max(12, localCacheCount * 20))}%` }}
             />
           </div>
-          <span className="text-[11px] text-[#8b91a0]">
-            {profile.savedIncidentsCount} incidents cached
+          <span className="text-[10px] text-[#8b91a0] leading-tight">
+            {storageEstimate.usedKb !== null
+              ? `IndexedDB ~${storageEstimate.usedKb} KB · ${outboxCount} outbox queued`
+              : `IndexedDB active · ${outboxCount} outbox queued`}
           </span>
         </div>
       </div>
@@ -168,7 +256,7 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
               <span className="text-[12px] text-[#c0c6d6] mt-0.5 leading-snug">
                 {isInternetConnected
                   ? 'Connected to cellular/satellite uplink. Live incident reports bridge directly to Central Command servers.'
-                  : 'Zero-internet disaster mode. Packets hop exclusively peer-to-peer over local BLE and Wi-Fi Direct.'}
+                  : 'Zero-internet disaster mode. Packets hop exclusively peer-to-peer over local BLE and WebRTC.'}
               </span>
             </div>
           </div>
@@ -315,7 +403,7 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
       {/* Minimalist Clean Footer Note */}
       <div className="flex flex-col items-center justify-center text-center gap-1 pt-2 text-[#8b91a0] shrink-0">
         <span className="text-[11px] font-mono tracking-wider">
-          NEXUS NODE v4.2 · ZERO INTERNET DEPENDENCY
+          NEXUS NODE · ZERO INTERNET DEPENDENCY
         </span>
         <span className="text-[10px] text-[#8b91a0]/70">
           Decentralized End-to-End Encrypted Relay
@@ -380,7 +468,7 @@ export const DeviceTab: React.FC<DeviceTabProps> = ({
 
             <div className="flex flex-col gap-1">
               <span className="text-[14px] font-semibold text-[#e5e2e1]">
-                Scan to Import 4 Cached Incidents
+                Scan to Import {localCacheCount} Cached Incident{localCacheCount === 1 ? '' : 's'}
               </span>
               <p className="text-[12px] text-[#c0c6d6] leading-relaxed">
                 Another field responder can scan this code with their Nexus camera to sync cached reports offline with zero network connectivity.

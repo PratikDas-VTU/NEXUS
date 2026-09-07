@@ -1,22 +1,27 @@
 import React, { useState } from 'react';
 import { MeshPeer } from '../types';
 import { meshPeers } from '../data/mockData';
+import type { RelayNetworkStatus } from '../../../shared/interfaces';
 
 interface NetworkTabProps {
   onShowToast: (msg: string) => void;
   isInternetConnected?: boolean;
   onToggleInternet?: () => void;
+  networkStatus?: RelayNetworkStatus;
 }
 
 export const NetworkTab: React.FC<NetworkTabProps> = ({
   onShowToast,
   isInternetConnected = false,
   onToggleInternet,
+  networkStatus,
 }) => {
-  const [peers, setPeers] = useState<MeshPeer[]>(meshPeers);
+  const [peers] = useState<MeshPeer[]>(meshPeers);
   const [isAutoScanning, setIsAutoScanning] = useState<boolean>(true);
   const [backgroundDiscovery, setBackgroundDiscovery] = useState<boolean>(true);
   const [highlightedPeerId, setHighlightedPeerId] = useState<string | null>(null);
+
+  const realPeerCount = networkStatus?.activePeers?.length ?? 0;
 
   const handleToggleAutoScan = () => {
     const next = !isAutoScanning;
@@ -59,7 +64,9 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
         <div className="flex flex-col">
           <h1 className="text-[20px] font-bold text-[#e5e2e1] tracking-tight">Nearby Mesh</h1>
           <p className="text-[13px] text-[#c0c6d6]">
-            {peers.length} devices connected via Bluetooth &amp; Wi-Fi Direct
+            {realPeerCount === 0
+              ? '0 peers connected · Standby for local WebRTC mesh'
+              : `${realPeerCount} peer${realPeerCount > 1 ? 's' : ''} connected via WebRTC & Local Mesh`}
           </p>
         </div>
         <button
@@ -86,6 +93,13 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
 
       {/* Kinetic Radar Visualization */}
       <div className="relative w-full aspect-square max-w-[320px] min-h-[250px] mx-auto rounded-3xl bg-[#1c1b1b] border border-[#2a2a2a] p-4 flex items-center justify-center overflow-hidden shadow-2xl shrink-0">
+        {/* Honest Simulation Label Badge */}
+        <div className="absolute top-2.5 inset-x-3 flex justify-center pointer-events-none z-20">
+          <span className="px-2.5 py-0.5 rounded-full bg-[#131313]/90 border border-[#2a2a2a] text-[10px] font-medium text-[#8b91a0]">
+            Mesh topology visualization (Simulated)
+          </span>
+        </div>
+
         {/* Concentric Circles & Grid */}
         <div className="absolute inset-4 rounded-full border border-[#2a2a2a]/40" />
         <div className="absolute inset-14 rounded-full border border-[#2a2a2a]/60" />
@@ -118,7 +132,7 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
           </span>
         </div>
 
-        {/* Peer 1 on Radar: Alpha Medic */}
+        {/* Peer 1 on Radar */}
         <div
           onClick={() => handleSelectPeer(peers[0])}
           style={{ top: peers[0].radarPos.top, right: peers[0].radarPos.right }}
@@ -134,7 +148,7 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
           </span>
         </div>
 
-        {/* Peer 2 on Radar: Rescue Unit 09 */}
+        {/* Peer 2 on Radar */}
         <div
           onClick={() => handleSelectPeer(peers[1])}
           style={{ bottom: peers[1].radarPos.bottom, left: peers[1].radarPos.left }}
@@ -150,7 +164,7 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
           </span>
         </div>
 
-        {/* Peer 3 on Radar: Civilian Relay */}
+        {/* Peer 3 on Radar */}
         <div
           onClick={() => handleSelectPeer(peers[2])}
           style={{ bottom: peers[2].radarPos.bottom, right: peers[2].radarPos.right }}
@@ -166,7 +180,7 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
           </span>
         </div>
 
-        {/* Peer 4 on Radar: Basecamp Gateway */}
+        {/* Peer 4 on Radar */}
         <div
           onClick={() => handleSelectPeer(peers[3])}
           style={{ top: peers[3].radarPos.top, left: peers[3].radarPos.left }}
@@ -183,21 +197,89 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
         </div>
       </div>
 
-      {/* Live Telemetry Pill - Dedicated clean placement outside radar */}
+      {/* Live Telemetry Pill */}
       <div className="flex justify-center shrink-0">
         <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#1c1b1b] border border-[#2a2a2a] text-[#c0c6d6] text-[11px] shadow-sm">
-          <span className="material-symbols-outlined text-[14px] text-[#47e266]">check_circle</span>
-          <span className="text-[#e5e2e1] font-medium">Mesh density optimal</span>
+          <span className="material-symbols-outlined text-[14px] text-[#47e266]">
+            {realPeerCount > 0 ? 'check_circle' : 'sensors'}
+          </span>
+          <span className="text-[#e5e2e1] font-medium">
+            {realPeerCount > 0 ? `${realPeerCount} Peer Connection${realPeerCount > 1 ? 's' : ''} Active` : 'WebRTC Mesh Standby'}
+          </span>
           <span className="text-[#8b91a0]">·</span>
-          <span>Instant peer hopping</span>
+          <span>Store-Carry-Forward Engine Active</span>
         </div>
       </div>
 
-      {/* Active Mesh Peers List */}
-      <div className="flex flex-col gap-3 shrink-0">
-        <h2 className="text-[15px] font-semibold text-[#e5e2e1] px-1 tracking-tight">
-          Active Mesh Peers
-        </h2>
+      {/* Real Connected WebRTC Peers Section */}
+      <div className="flex flex-col gap-2 shrink-0">
+        <div className="flex items-center justify-between px-1">
+          <h2 className="text-[15px] font-semibold text-[#e5e2e1] tracking-tight">
+            Connected Mesh Peers (Live WebRTC)
+          </h2>
+          <span className="text-[11px] font-mono text-[#aac7ff]">
+            {realPeerCount} Active
+          </span>
+        </div>
+
+        {realPeerCount > 0 ? (
+          <div className="flex flex-col gap-2">
+            {networkStatus?.activePeers.map((peer, idx) => {
+              const peerId = typeof peer === 'string' ? peer : peer.peerId || peer.deviceId || `peer-${idx}`;
+              const peerNodeId = typeof peer === 'object' && peer?.deviceId ? peer.deviceId : undefined;
+              const transport = typeof peer === 'object' && peer?.transportType ? peer.transportType : 'webrtc';
+
+              return (
+                <div
+                  key={peerId}
+                  className="p-3.5 rounded-2xl bg-[#1c1b1b] border border-[#3e90ff]/40 flex items-center justify-between shadow-sm"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-[#3e90ff]/20 text-[#aac7ff] flex items-center justify-center border border-[#3e90ff]/40">
+                      <span className="material-symbols-outlined text-[20px]">cell_tower</span>
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-[13px] font-bold text-[#e5e2e1] font-mono">
+                        {peerId.length > 20 ? `${peerId.slice(0, 18)}...` : peerId}
+                      </span>
+                      <span className="text-[11px] text-[#47e266] flex items-center gap-1 mt-0.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#47e266]" />
+                        {peerNodeId ? `Node ${peerNodeId} · ` : ''}{transport.toUpperCase()} DataChannel · Relaying
+                      </span>
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#47e266]/15 text-[#47e266]">
+                    Online
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="p-4 rounded-2xl bg-[#1c1b1b] border border-[#2a2a2a] text-center flex flex-col items-center justify-center py-5">
+            <span className="material-symbols-outlined text-[24px] text-[#8b91a0] mb-1.5">
+              wifi_tethering_off
+            </span>
+            <span className="text-[13px] font-medium text-[#c0c6d6]">
+              No active WebRTC peer connections
+            </span>
+            <span className="text-[11px] text-[#8b91a0] mt-1 max-w-[280px]">
+              Open <span className="text-[#aac7ff] font-mono">?node=B</span> in another browser window or connect on LAN to form mesh
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Simulated Mesh Nodes (Demo Topology) */}
+      <div className="flex flex-col gap-2.5 shrink-0">
+        <div className="flex items-center justify-between px-1">
+          <h2 className="text-[15px] font-semibold text-[#e5e2e1] tracking-tight">
+            Mesh Topology Reference Nodes
+          </h2>
+          <span className="text-[10.5px] text-[#8b91a0]">
+            Simulated
+          </span>
+        </div>
 
         {peers.map((peer) => {
           const isHighlighted = highlightedPeerId === peer.id;
@@ -206,27 +288,27 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
             <div
               key={peer.id}
               onClick={() => handleSelectPeer(peer)}
-              className={`p-4 rounded-2xl bg-[#1c1b1b] border flex items-center justify-between cursor-pointer transition-all active:scale-[0.99] shrink-0 ${
+              className={`p-3.5 rounded-2xl bg-[#1c1b1b] border flex items-center justify-between cursor-pointer transition-all active:scale-[0.99] shrink-0 ${
                 isHighlighted
                   ? 'border-[#47e266] shadow-[0_0_20px_rgba(71,226,102,0.2)] bg-[#201f1f]'
                   : 'border-[#2a2a2a] hover:border-[#353534]'
               }`}
             >
-              <div className="flex items-center gap-3.5">
-                <div className={`w-11 h-11 rounded-2xl flex items-center justify-center ${
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
                   peer.typeBadge === 'Direct'
                     ? 'bg-[#47e266]/15 text-[#47e266]'
                     : peer.typeBadge === 'Relay'
                     ? 'bg-[#3e90ff]/15 text-[#aac7ff]'
                     : 'bg-[#2a2a2a] text-[#c0c6d6]'
                 }`}>
-                  <span className="material-symbols-outlined text-[22px]">{peer.icon}</span>
+                  <span className="material-symbols-outlined text-[20px]">{peer.icon}</span>
                 </div>
 
                 <div className="flex flex-col">
                   <div className="flex items-center gap-2">
-                    <span className="text-[15px] font-semibold text-[#e5e2e1]">{peer.name}</span>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
+                    <span className="text-[14px] font-semibold text-[#e5e2e1]">{peer.name}</span>
+                    <span className={`text-[9.5px] px-2 py-0.5 rounded-full font-semibold ${
                       peer.typeBadge === 'Direct'
                         ? 'bg-[#47e266]/15 text-[#47e266]'
                         : peer.typeBadge === 'Relay'
@@ -236,10 +318,10 @@ export const NetworkTab: React.FC<NetworkTabProps> = ({
                       {peer.typeBadge}
                     </span>
                   </div>
-                  <span className="text-[12px] text-[#c0c6d6] mt-0.5">
+                  <span className="text-[11.5px] text-[#c0c6d6] mt-0.5">
                     {peer.role} · {peer.distance}
                   </span>
-                  <span className="text-[11px] text-[#8b91a0] mt-0.5">{peer.syncTime}</span>
+                  <span className="text-[10.5px] text-[#8b91a0] mt-0.5">{peer.syncTime}</span>
                 </div>
               </div>
 

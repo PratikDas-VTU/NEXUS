@@ -5,10 +5,13 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss()] as any,
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(__dirname, './src'),
+        '@shared': path.resolve(__dirname, '../shared'),
+        '@backend': path.resolve(__dirname, '../backend'),
+        '@networking': path.resolve(__dirname, '../networking'),
       },
     },
     server: {

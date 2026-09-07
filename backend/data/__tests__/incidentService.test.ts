@@ -151,4 +151,42 @@ describe('incidentService', () => {
       await newDbInstance.delete(); // cleanup
     });
   });
+
+  describe('FrontendIncidentService & listIncidents', () => {
+    it('filters incidents by type and priority in listIncidents', async () => {
+      await createIncident({ ...validDraft, type: 'medical' }, testDb);
+      await createIncident({ ...validDraft, type: 'shelter', priority: 'P2' }, testDb);
+
+      const medicals = await testDb.incidents.toArray();
+      expect(medicals.length).toBe(2);
+
+      const frontendService = new (await import('../incidentService')).FrontendIncidentService(testDb);
+      const filtered = await frontendService.listIncidents({ type: 'medical' });
+      expect(filtered.length).toBe(1);
+      expect(filtered[0].type).toBe('medical');
+
+      const outboxCount = await frontendService.getOutboxCount();
+      expect(outboxCount).toBe(2);
+    });
+
+    it('subscribes to incident changes via subscribeToIncidents', async () => {
+      const frontendService = new (await import('../incidentService')).FrontendIncidentService(testDb);
+      
+      let captured: Incident[] = [];
+      const unsubscribe = frontendService.subscribeToIncidents((incidents) => {
+        captured = incidents;
+      });
+
+      // Wait a tick for initial query
+      await new Promise((r) => setTimeout(r, 50));
+      expect(captured.length).toBe(0);
+
+      await frontendService.createIncident(validDraft);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(captured.length).toBe(1);
+      expect(captured[0].type).toBe('medical');
+
+      unsubscribe();
+    });
+  });
 });
