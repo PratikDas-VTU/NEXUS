@@ -6,6 +6,7 @@ node_modules/
 # Build artifacts
 dist/
 build/
+.vite/
 
 # Environment and secrets
 .env
