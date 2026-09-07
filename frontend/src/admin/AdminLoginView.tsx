@@ -121,7 +121,7 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
               lock
             </span>
             <span>
-              Restricted Area: Access granted only to authorized disaster coordinators & campus security leads.
+              Local Offline Command Authentication: Validated locally against device memory (Zero-Cloud).
             </span>
           </div>
 

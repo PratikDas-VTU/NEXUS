@@ -9,6 +9,7 @@ interface IncidentManagerProps {
     location: string;
     category: string;
     badgeColor?: 'error' | 'amber' | 'primary';
+    peopleAffected?: number;
   }) => void;
   onResolveIncident: (id: string) => void;
   onShowToast: (msg: string) => void;
@@ -23,9 +24,10 @@ export const IncidentManager: React.FC<IncidentManagerProps> = ({
   const [showAddModal, setShowAddModal] = useState(false);
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [newTitle, setNewTitle] = useState('');
-  const [newLocation, setNewLocation] = useState('Amrita Main Academic Block');
+  const [newLocation, setNewLocation] = useState('Amrita Academic Block A (Ramanujan)');
   const [newCategory, setNewCategory] = useState('critical medical');
   const [newDescription, setNewDescription] = useState('');
+  const [peopleAffected, setPeopleAffected] = useState(1);
   const [severityLevel, setSeverityLevel] = useState<'critical' | 'urgent' | 'info'>('critical');
 
   const handleCreateBroadcast = (e: React.FormEvent) => {
@@ -44,16 +46,19 @@ export const IncidentManager: React.FC<IncidentManagerProps> = ({
       location: newLocation.trim(),
       category: newCategory,
       badgeColor,
+      peopleAffected,
     });
 
     onShowToast(`🚨 Priority Broadcast Pushed: "${newTitle}"`);
     setNewTitle('');
     setNewDescription('');
+    setPeopleAffected(1);
     setShowAddModal(false);
   };
 
   const filtered = incidents.filter((inc) => {
     if (filterCategory === 'all') return true;
+    if (filterCategory === 'resolved') return inc.statusText?.toLowerCase() === 'resolved';
     return inc.category.toLowerCase().includes(filterCategory.toLowerCase());
   });
 
@@ -69,7 +74,7 @@ export const IncidentManager: React.FC<IncidentManagerProps> = ({
             <span>Incident Command &amp; Mesh Dispatch</span>
           </h2>
           <p className="text-[11px] text-[#8b91a0] mt-0.5">
-            Manage active perimeter emergencies and push cryptographically signed broadcasts across Amrita nodes.
+            Manage active perimeter emergencies. Dispatches are saved to Dexie and queued for Store-Carry-Forward relay.
           </p>
         </div>
 
@@ -86,10 +91,11 @@ export const IncidentManager: React.FC<IncidentManagerProps> = ({
       <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
         {[
           { id: 'all', label: `All (${incidents.length})` },
-          { id: 'critical', label: 'Critical High Priority' },
+          { id: 'critical', label: 'Critical (P0)' },
           { id: 'medical', label: 'Medical Emergencies' },
-          { id: 'hazard', label: 'Grid & Hazards' },
+          { id: 'hazard', label: 'Hazards & Safety' },
           { id: 'supplies', label: 'Relief Resources' },
+          { id: 'resolved', label: 'Resolved' },
         ].map((f) => (
           <button
             key={f.id}
@@ -113,73 +119,98 @@ export const IncidentManager: React.FC<IncidentManagerProps> = ({
             <p className="text-xs">No incidents matching the selected filter</p>
           </div>
         ) : (
-          filtered.map((inc) => (
-            <div
-              key={inc.id}
-              className="bg-[#181818] hover:bg-[#1c1c1c] border border-[#282828] rounded-2xl p-4 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-3"
-            >
-              <div className="space-y-1.5 flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                      inc.badgeColor === 'error'
-                        ? 'bg-[#93000a] text-[#ffdad6]'
-                        : inc.badgeColor === 'amber'
-                        ? 'bg-amber-950 text-amber-300 border border-amber-500/30'
-                        : 'bg-[#002957] text-[#aac7ff]'
-                    }`}
+          filtered.map((inc) => {
+            const isResolved = inc.statusText?.toLowerCase() === 'resolved';
+
+            return (
+              <div
+                key={inc.id}
+                className={`border rounded-2xl p-4 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-3 ${
+                  isResolved
+                    ? 'bg-[#141814] border-[#253826]/70 opacity-80'
+                    : 'bg-[#181818] hover:bg-[#1c1c1c] border-[#282828]'
+                }`}
+              >
+                <div className="space-y-1.5 flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                        inc.badgeColor === 'error'
+                          ? 'bg-[#93000a] text-[#ffdad6]'
+                          : inc.badgeColor === 'amber'
+                          ? 'bg-amber-950 text-amber-300 border border-amber-500/30'
+                          : 'bg-[#002957] text-[#aac7ff]'
+                      }`}
+                    >
+                      {inc.typeLabel || inc.category}
+                    </span>
+                    <span className="text-[11px] text-[#8b91a0]">{inc.timeAgo}</span>
+                    <span className="text-[11px] text-[#47e266] flex items-center gap-1 font-mono">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#47e266]" />
+                      <span>{isResolved ? 'Resolved' : 'Active'}</span>
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded bg-[#202020] text-[#8b91a0] text-[10px] font-mono">
+                      Hops: {inc.hopsRemaining ?? 3} rem
+                    </span>
+                    {inc.peopleAffected !== undefined && inc.peopleAffected > 1 && (
+                      <span className="px-1.5 py-0.5 rounded bg-[#242010] text-[#ffd279] text-[10px] font-mono">
+                        {inc.peopleAffected} people
+                      </span>
+                    )}
+                  </div>
+
+                  <h3 className="text-sm font-bold text-[#e5e2e1] truncate">{inc.title}</h3>
+                  <p className="text-xs text-[#c0c6d6] line-clamp-2 leading-relaxed">
+                    {inc.description}
+                  </p>
+
+                  <div className="flex items-center gap-3 text-[11px] text-[#8b91a0] pt-1">
+                    <span className="flex items-center gap-1 text-[#aac7ff]">
+                      <span className="material-symbols-outlined text-[14px]">place</span>
+                      <span>{inc.location}</span>
+                    </span>
+                    <span>·</span>
+                    <span>{inc.distance}</span>
+                    <span>·</span>
+                    <span className="font-mono text-[#8b91a0]">ID: {inc.id.slice(0, 8)}</span>
+                  </div>
+                </div>
+
+                {/* Admin Actions for this Incident */}
+                <div className="flex items-center gap-2 self-start md:self-center shrink-0">
+                  {isResolved ? (
+                    <span className="px-3 py-1.5 rounded-xl bg-[#1e2a20] border border-[#346b3b] text-xs font-semibold text-[#6cff82] flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[16px]">check_circle</span>
+                      <span>Resolved in Dexie</span>
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        onResolveIncident(inc.id);
+                        onShowToast(`✓ Incident marked resolved in Dexie: "${inc.title}"`);
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-[#202020] hover:bg-[#282828] border border-[#333] text-xs font-semibold text-[#47e266] flex items-center gap-1.5 transition-all cursor-pointer hover:border-[#47e266]/50"
+                      title="Mark incident resolved in local Dexie vault"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">task_alt</span>
+                      <span>Resolve</span>
+                    </button>
+                  )}
+
+                  <button
+                    onClick={() => {
+                      onShowToast(`Dispatched backup notification for: ${inc.location}`);
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-[#3e90ff]/10 hover:bg-[#3e90ff]/20 border border-[#3e90ff]/30 text-xs font-semibold text-[#aac7ff] flex items-center gap-1.5 transition-all cursor-pointer"
+                    title="Dispatch campus units"
                   >
-                    {inc.typeLabel || inc.category}
-                  </span>
-                  <span className="text-[11px] text-[#8b91a0]">{inc.timeAgo}</span>
-                  <span className="text-[11px] text-[#47e266] flex items-center gap-1 font-mono">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#47e266]" />
-                    <span>Mesh Active</span>
-                  </span>
-                </div>
-
-                <h3 className="text-sm font-bold text-[#e5e2e1] truncate">{inc.title}</h3>
-                <p className="text-xs text-[#c0c6d6] line-clamp-2 leading-relaxed">
-                  {inc.description}
-                </p>
-
-                <div className="flex items-center gap-3 text-[11px] text-[#8b91a0] pt-1">
-                  <span className="flex items-center gap-1 text-[#aac7ff]">
-                    <span className="material-symbols-outlined text-[14px]">place</span>
-                    <span>{inc.location}</span>
-                  </span>
-                  <span>·</span>
-                  <span>{inc.distance}</span>
+                    <span className="material-symbols-outlined text-[16px]">send</span>
+                    <span>Dispatch</span>
+                  </button>
                 </div>
               </div>
-
-              {/* Admin Actions for this Incident */}
-              <div className="flex items-center gap-2 self-start md:self-center shrink-0">
-                <button
-                  onClick={() => {
-                    onResolveIncident(inc.id);
-                    onShowToast(`✓ Incident marked resolved: "${inc.title}"`);
-                  }}
-                  className="px-3 py-1.5 rounded-xl bg-[#202020] hover:bg-[#282828] border border-[#333] text-xs font-semibold text-[#47e266] flex items-center gap-1.5 transition-all cursor-pointer"
-                  title="Mark incident resolved"
-                >
-                  <span className="material-symbols-outlined text-[16px]">task_alt</span>
-                  <span>Resolve</span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    onShowToast(`Dispatched backup responders to ${inc.location}`);
-                  }}
-                  className="px-3 py-1.5 rounded-xl bg-[#3e90ff]/10 hover:bg-[#3e90ff]/20 border border-[#3e90ff]/30 text-xs font-semibold text-[#aac7ff] flex items-center gap-1.5 transition-all cursor-pointer"
-                  title="Dispatch Amrita emergency units"
-                >
-                  <span className="material-symbols-outlined text-[16px]">send</span>
-                  <span>Dispatch Unit</span>
-                </button>
-              </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 
@@ -224,32 +255,52 @@ export const IncidentManager: React.FC<IncidentManagerProps> = ({
                   </label>
                   <select
                     value={severityLevel}
-                    onChange={(e) => setSeverityLevel(e.target.value as any)}
+                    onChange={(e) => {
+                      const level = e.target.value as 'critical' | 'urgent' | 'info';
+                      setSeverityLevel(level);
+                      if (level === 'critical') setNewCategory('critical medical');
+                      else if (level === 'urgent') setNewCategory('urgent hazard');
+                      else setNewCategory('supplies resource');
+                    }}
                     className="w-full bg-[#121212] border border-[#303030] focus:border-[#3e90ff] rounded-xl p-2.5 text-xs text-[#e5e2e1] outline-none cursor-pointer"
                   >
-                    <option value="critical">Critical Level 1 (Immediate Danger)</option>
-                    <option value="urgent">Urgent Hazard (Caution/Detour)</option>
-                    <option value="info">Resource / Advisory</option>
+                    <option value="critical">Critical Level 1 (P0 Medical/Trapped)</option>
+                    <option value="urgent">Urgent Hazard (P1 Safety/Caution)</option>
+                    <option value="info">Resource / Advisory (P2 Supplies)</option>
                   </select>
                 </div>
 
                 <div>
                   <label className="block text-[11px] font-semibold text-[#c0c6d6] uppercase tracking-wider mb-1">
-                    Campus Zone / Sector
+                    People Affected
                   </label>
-                  <select
-                    value={newLocation}
-                    onChange={(e) => setNewLocation(e.target.value)}
-                    className="w-full bg-[#121212] border border-[#303030] focus:border-[#3e90ff] rounded-xl p-2.5 text-xs text-[#e5e2e1] outline-none cursor-pointer"
-                  >
-                    <option value="Amrita Main Academic Block A">Amrita Academic Block A (Ramanujan)</option>
-                    <option value="Amrita Central Quad & Library">Amrita Central Quad &amp; Library</option>
-                    <option value="North Gate · SH-50 Junction">North Gate · SH-50 Junction</option>
-                    <option value="Agastya Student Dining & Hostel">Agastya Dining &amp; Amenities</option>
-                    <option value="Vengal Primary Health Centre">Vengal Primary Health Centre</option>
-                    <option value="Vengal Lake / East Perimeter">Vengal Lake / East Perimeter</option>
-                  </select>
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={peopleAffected}
+                    onChange={(e) => setPeopleAffected(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-full bg-[#121212] border border-[#303030] focus:border-[#3e90ff] rounded-xl p-2.5 text-xs text-[#e5e2e1] outline-none"
+                  />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-[#c0c6d6] uppercase tracking-wider mb-1">
+                  Campus Zone / Sector
+                </label>
+                <select
+                  value={newLocation}
+                  onChange={(e) => setNewLocation(e.target.value)}
+                  className="w-full bg-[#121212] border border-[#303030] focus:border-[#3e90ff] rounded-xl p-2.5 text-xs text-[#e5e2e1] outline-none cursor-pointer"
+                >
+                  <option value="Amrita Academic Block A (Ramanujan)">Amrita Academic Block A (Ramanujan)</option>
+                  <option value="Amrita Central Quad & Library">Amrita Central Quad &amp; Library</option>
+                  <option value="North Gate · SH-50 Junction">North Gate · SH-50 Junction</option>
+                  <option value="Agastya Student Dining & Hostel">Agastya Dining &amp; Amenities</option>
+                  <option value="Vengal Primary Health Centre">Vengal Primary Health Centre</option>
+                  <option value="Vengal Lake / East Perimeter">Vengal Lake / East Perimeter</option>
+                </select>
               </div>
 
               <div>
@@ -279,7 +330,7 @@ export const IncidentManager: React.FC<IncidentManagerProps> = ({
                   className="px-4 py-2 rounded-xl bg-[#3e90ff] hover:bg-[#327ce0] text-[#002957] font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-md"
                 >
                   <span className="material-symbols-outlined text-[16px]">sensors</span>
-                  <span>Sign &amp; Dispatch Alert</span>
+                  <span>Persist to Dexie &amp; Relay</span>
                 </button>
               </div>
             </form>

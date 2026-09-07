@@ -1,3 +1,11 @@
+/**
+ * NEXUS Reference & Simulated Dataset
+ * 
+ * NOTE: This dataset provides reference schema and simulated topology data
+ * for emergency preparedness drills when physical radio repeaters or LoRa hardware
+ * are not connected. Live mesh views in NEXUS read truthfully from local Dexie / WebRTC.
+ */
+
 import { AdminUser, NodeHealth, ResponderTeam, AdminAuditLog } from './types';
 
 export const DEFAULT_ADMIN_USER: AdminUser = {

@@ -22,9 +22,24 @@ function AppContent() {
   const [adminUser, setAdminUser] = useState<AdminUser | null>(null);
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.location.hash === '#admin') {
-      setViewMode(adminUser ? 'admin' : 'admin-login');
-    }
+    const checkUrlRoute = () => {
+      if (typeof window === 'undefined') return;
+      const isHashAdmin = window.location.hash === '#admin';
+      const isPathAdmin = window.location.pathname === '/admin';
+      if (isHashAdmin || isPathAdmin) {
+        setViewMode(adminUser ? 'admin' : 'admin-login');
+      } else if (window.location.hash === '#field') {
+        setViewMode('field');
+      }
+    };
+
+    checkUrlRoute();
+    window.addEventListener('hashchange', checkUrlRoute);
+    window.addEventListener('popstate', checkUrlRoute);
+    return () => {
+      window.removeEventListener('hashchange', checkUrlRoute);
+      window.removeEventListener('popstate', checkUrlRoute);
+    };
   }, [adminUser]);
 
   const {
@@ -151,6 +166,9 @@ function AppContent() {
   };
 
   const handleOpenAdmin = () => {
+    if (typeof window !== 'undefined') {
+      window.location.hash = '#admin';
+    }
     if (adminUser) {
       setViewMode('admin');
     } else {
@@ -160,14 +178,27 @@ function AppContent() {
 
   const handleAdminLoginSuccess = (user: AdminUser) => {
     setAdminUser(user);
+    if (typeof window !== 'undefined') {
+      window.location.hash = '#admin';
+    }
     setViewMode('admin');
     triggerToast(`Authenticated as Commander ${user.name}`);
   };
 
   const handleAdminLogout = () => {
     setAdminUser(null);
+    if (typeof window !== 'undefined') {
+      window.location.hash = '#field';
+    }
     setViewMode('field');
-    triggerToast('Logged out from Amrita Disaster Command Hub');
+    triggerToast('Logged out from Disaster Command Hub');
+  };
+
+  const handleSwitchToFieldView = () => {
+    if (typeof window !== 'undefined') {
+      window.location.hash = '#field';
+    }
+    setViewMode('field');
   };
 
   const handleAdminAddIncident = async (data: {
@@ -176,13 +207,14 @@ function AppContent() {
     location: string;
     category: string;
     badgeColor?: 'error' | 'amber' | 'primary';
+    peopleAffected?: number;
   }) => {
     try {
       let type: IncidentType = 'medical';
       let priority: IncidentPriority = 'P0';
 
       const cat = (data.category || '').toLowerCase();
-      if (cat.includes('fire') || cat.includes('wildfire')) {
+      if (cat.includes('fire') || cat.includes('wildfire') || cat.includes('hazard')) {
         type = 'safety';
         priority = 'P1';
       } else if (
@@ -201,16 +233,20 @@ function AppContent() {
         priority = 'P1';
       }
 
+      // Default to Amrita Vengal coordinates or user GPS fix
+      const baseLat = currentLocation ? currentLocation.latitude : 13.2384;
+      const baseLng = currentLocation ? currentLocation.longitude : 80.0094;
+
       await createIncident({
         type,
         priority,
-        latitude: 12.972 + (Math.random() - 0.5) * 0.01,
-        longitude: 77.595 + (Math.random() - 0.5) * 0.01,
-        peopleAffected: 1,
+        latitude: baseLat + (Math.random() - 0.5) * 0.006,
+        longitude: baseLng + (Math.random() - 0.5) * 0.006,
+        peopleAffected: data.peopleAffected ?? 1,
         description: `${data.title}\n${data.description} [Sector: ${data.location}]`,
       });
 
-      triggerToast(`Admin Incident logged: "${data.title}" queued for mesh broadcast`);
+      triggerToast(`Admin Incident logged: "${data.title}" persisted to Dexie and queued for relay`);
     } catch (err: any) {
       triggerToast(`Failed to dispatch incident: ${err?.message || 'Validation error'}`);
     }
@@ -219,7 +255,7 @@ function AppContent() {
   const handleAdminResolveIncident = async (id: string) => {
     try {
       await updateIncidentStatus(id, 'resolved');
-      triggerToast(`Incident #${id.slice(0, 8)} marked as RESOLVED`);
+      triggerToast(`Incident #${id.slice(0, 8)} marked as RESOLVED (Stored in Dexie)`);
     } catch (err: any) {
       triggerToast(`Failed to resolve incident: ${err?.message || 'Error'}`);
     }
@@ -229,7 +265,7 @@ function AppContent() {
     return (
       <AdminLoginView
         onLoginSuccess={handleAdminLoginSuccess}
-        onCancel={() => setViewMode('field')}
+        onCancel={handleSwitchToFieldView}
         onShowToast={triggerToast}
         isInternetConnected={isInternetConnected}
         onToggleInternet={handleToggleInternet}
@@ -245,7 +281,7 @@ function AppContent() {
         onAddIncident={handleAdminAddIncident}
         onResolveIncident={handleAdminResolveIncident}
         onLogout={handleAdminLogout}
-        onSwitchToFieldView={() => setViewMode('field')}
+        onSwitchToFieldView={handleSwitchToFieldView}
         onShowToast={triggerToast}
         isInternetConnected={isInternetConnected}
         onToggleInternet={handleToggleInternet}

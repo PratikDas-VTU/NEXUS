@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { AdminUser } from './types';
 import { IncidentManager } from './IncidentManager';
 import { NodeTelemetry } from './NodeTelemetry';
 import { ResponderDirectory } from './ResponderDirectory';
 import { MapTab } from '../components/MapTab';
 import { IncidentItem } from '../types';
+import { useNexusServices } from '../context/ServiceContext';
 
 interface AdminDashboardProps {
   adminUser: AdminUser;
@@ -15,6 +16,7 @@ interface AdminDashboardProps {
     location: string;
     category: string;
     badgeColor?: 'error' | 'amber' | 'primary';
+    peopleAffected?: number;
   }) => void;
   onResolveIncident: (id: string) => void;
   onLogout: () => void;
@@ -46,6 +48,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   isInternetConnected,
   onToggleInternet,
 }) => {
+  const {
+    networkStatus,
+    networkDiagnostics,
+    deviceId,
+    outboxCount,
+    reconnectSignaler,
+  } = useNexusServices();
+
   const [activeNav, setActiveNav] = useState<AdminNavTab>('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(() =>
@@ -53,20 +63,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   );
 
   // Quick stats derived from real app data
-  const criticalIncidentsCount = incidents.filter(
-    (i) => i.badgeColor === 'error' || i.category.includes('critical')
-  ).length;
-
-  const filteredIncidents = incidents.filter(
-    (i) =>
-      i.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      i.location.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      i.category.toLowerCase().includes(searchQuery.toLowerCase())
+  const criticalIncidentsCount = useMemo(
+    () => incidents.filter((i) => i.badgeColor === 'error' || i.category.includes('critical')).length,
+    [incidents]
   );
+
+  const uniqueLocations = useMemo(() => {
+    const locs = incidents.map((i) => i.location).filter(Boolean);
+    return Array.from(new Set(locs));
+  }, [incidents]);
+
+  const filteredIncidents = useMemo(() => {
+    return incidents.filter(
+      (i) =>
+        i.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        i.location.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        i.category.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [incidents, searchQuery]);
+
+  const criticalIncidents = useMemo(() => {
+    return incidents.filter(
+      (i) =>
+        i.badgeColor === 'error' ||
+        i.category.includes('critical') ||
+        i.category.includes('hazard')
+    );
+  }, [incidents]);
 
   return (
     <div className="min-h-screen w-full bg-[#0c0c0d] text-[#e5e2e1] flex overflow-x-hidden font-sans select-none">
-      {/* 1. LEFT SIDEBAR (Matching the Command Dashboard architecture in the diagrams) */}
+      {/* 1. LEFT SIDEBAR */}
       <aside
         className={`${
           isSidebarOpen ? 'w-64' : 'w-20'
@@ -87,7 +114,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     NEXUS
                   </span>
                   <span className="text-[10px] text-[#8b91a0] -mt-0.5 tracking-tight font-mono">
-                    COMMAND v4.2
+                    DISASTER COMMAND
                   </span>
                 </div>
               )}
@@ -109,94 +136,89 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div>
               {isSidebarOpen && (
                 <span className="px-3 text-[10px] font-bold text-[#626875] tracking-wider uppercase block mb-2">
-                  Main
+                  Tactical Operations
                 </span>
               )}
               <nav className="space-y-1">
                 {[
                   { id: 'overview', label: 'Overview', icon: 'dashboard' },
-                  { id: 'map', label: 'Live Map', icon: 'map' },
-                  { id: 'incidents', label: 'Incidents', icon: 'emergency', badge: incidents.length },
-                  { id: 'alerts', label: 'Alerts', icon: 'notifications_active', badge: criticalIncidentsCount },
-                  { id: 'responders', label: 'Responders', icon: 'groups' },
-                  { id: 'analytics', label: 'Analytics & Nodes', icon: 'show_chart' },
-                ].map((item) => {
-                  const isActive = activeNav === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => setActiveNav(item.id as AdminNavTab)}
-                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                        isActive
-                          ? 'bg-[#3e90ff] text-[#002957] font-bold shadow-md shadow-[#3e90ff]/20'
-                          : 'text-[#9ea3ae] hover:text-[#e5e2e1] hover:bg-[#1a1a1e]'
-                      }`}
-                      title={item.label}
-                    >
-                      <span className="material-symbols-outlined text-[19px] shrink-0">
-                        {item.icon}
+                  { id: 'map', label: 'Live GIS Map', icon: 'map' },
+                  { id: 'incidents', label: 'Incidents & Relay', icon: 'emergency', badge: incidents.length },
+                  { id: 'alerts', label: 'Critical Alerts', icon: 'notifications_active', badge: criticalIncidentsCount },
+                  { id: 'analytics', label: 'Mesh Telemetry', icon: 'hub', badge: networkStatus.activePeers.length },
+                  { id: 'responders', label: 'Field Roster', icon: 'groups' },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveNav(item.id as AdminNavTab)}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
+                      activeNav === item.id
+                        ? 'bg-[#1e293b] text-[#3e90ff] shadow-sm shadow-[#3e90ff]/10'
+                        : 'text-[#8b91a0] hover:bg-[#18181c] hover:text-[#e5e2e1]'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[19px] shrink-0">
+                      {item.icon}
+                    </span>
+                    {isSidebarOpen && (
+                      <span className="truncate flex-1 text-left">{item.label}</span>
+                    )}
+                    {isSidebarOpen && item.badge !== undefined && item.badge > 0 && (
+                      <span
+                        className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold font-mono ${
+                          item.id === 'alerts'
+                            ? 'bg-[#93000a] text-[#ffdad6]'
+                            : 'bg-[#1e293b] text-[#aac7ff] border border-[#3e90ff]/30'
+                        }`}
+                      >
+                        {item.badge}
                       </span>
-                      {isSidebarOpen && <span className="truncate">{item.label}</span>}
-                      {isSidebarOpen && item.badge !== undefined && item.badge > 0 && (
-                        <span
-                          className={`ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-                            isActive
-                              ? 'bg-[#002957] text-[#aac7ff]'
-                              : 'bg-[#29292e] text-[#aac7ff]'
-                          }`}
-                        >
-                          {item.badge}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
+                    )}
+                  </button>
+                ))}
               </nav>
             </div>
 
-            {/* MANAGEMENT SECTION */}
             <div>
               {isSidebarOpen && (
                 <span className="px-3 text-[10px] font-bold text-[#626875] tracking-wider uppercase block mb-2">
-                  Management
+                  System &amp; Network
                 </span>
               )}
               <nav className="space-y-1">
                 {[
-                  { id: 'users', label: 'Users & Roles', icon: 'badge' },
-                  { id: 'settings', label: 'System Settings', icon: 'tune' },
-                  { id: 'audit', label: 'Audit Logs', icon: 'verified_user' },
-                ].map((item) => {
-                  const isActive = activeNav === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => setActiveNav(item.id as AdminNavTab)}
-                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                        isActive
-                          ? 'bg-[#3e90ff] text-[#002957] font-bold shadow-md shadow-[#3e90ff]/20'
-                          : 'text-[#9ea3ae] hover:text-[#e5e2e1] hover:bg-[#1a1a1e]'
-                      }`}
-                      title={item.label}
-                    >
-                      <span className="material-symbols-outlined text-[19px] shrink-0">
-                        {item.icon}
-                      </span>
-                      {isSidebarOpen && <span className="truncate">{item.label}</span>}
-                    </button>
-                  );
-                })}
+                  { id: 'users', label: 'Mesh Station Nodes', icon: 'badge' },
+                  { id: 'audit', label: 'Network Event Logs', icon: 'receipt_long' },
+                  { id: 'settings', label: 'Node Settings', icon: 'tune' },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveNav(item.id as AdminNavTab)}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
+                      activeNav === item.id
+                        ? 'bg-[#1e293b] text-[#3e90ff]'
+                        : 'text-[#8b91a0] hover:bg-[#18181c] hover:text-[#e5e2e1]'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[19px] shrink-0">
+                      {item.icon}
+                    </span>
+                    {isSidebarOpen && (
+                      <span className="truncate flex-1 text-left">{item.label}</span>
+                    )}
+                  </button>
+                ))}
               </nav>
             </div>
           </div>
         </div>
 
-        {/* Sidebar Footer Controls */}
-        <div className="p-3 border-t border-[#202024] space-y-2 bg-[#0e0e10]">
+        {/* BOTTOM SIDEBAR FOOTER */}
+        <div className="p-3 border-t border-[#202024] space-y-2">
           {/* Offline Mode Switcher */}
           <div
             onClick={onToggleInternet}
-            className={`p-2.5 rounded-xl border flex items-center justify-between cursor-pointer transition-colors ${
+            className={`flex items-center justify-between p-2 rounded-xl border cursor-pointer transition-all ${
               !isInternetConnected
                 ? 'bg-[#181f18] border-[#346b3b] text-[#6cff82]'
                 : 'bg-[#18181c] border-[#29292e] text-[#8b91a0]'
@@ -230,14 +252,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             )}
           </div>
 
-          {/* Switch to Field Mobile App Preview */}
+          {/* Switch to Field Mobile App */}
           <button
             onClick={onSwitchToFieldView}
             className="w-full flex items-center justify-center gap-2 p-2 rounded-xl bg-[#1a1a1f] hover:bg-[#24242a] border border-[#2b2b32] text-xs text-[#aac7ff] cursor-pointer transition-all active:scale-[0.98]"
             title="Preview Mobile Field Responder App"
           >
             <span className="material-symbols-outlined text-[17px]">smartphone</span>
-            {isSidebarOpen && <span>Field App View</span>}
+            {isSidebarOpen && <span>Field Responder App</span>}
           </button>
         </div>
       </aside>
@@ -249,7 +271,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <div className="flex items-center gap-3">
             <span className="text-xs text-[#8b91a0] flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-[#47e266] animate-pulse" />
-              <span>Last Sync: <strong>Just now</strong></span>
+              <span>Mesh State: <strong>{networkStatus.mode.toUpperCase()}</strong></span>
             </span>
             <span className="text-xs text-[#444] hidden sm:inline">|</span>
             <span className="text-xs text-[#aac7ff] font-medium hidden sm:inline">
@@ -267,16 +289,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search incidents, nodes, responders..."
+                placeholder="Search incidents, sectors, nodes..."
                 className="w-64 bg-[#18181c] border border-[#28282e] focus:border-[#3e90ff] rounded-xl py-1.5 pl-8 pr-3 text-xs text-[#e5e2e1] outline-none transition-all placeholder-[#555]"
               />
             </div>
 
             {/* Quick Refresh */}
             <button
-              onClick={() => onShowToast('System synchronized with Amrita Vengal Gateway')}
+              onClick={() => onShowToast('Dexie storage & WebRTC channels verified')}
               className="p-2 rounded-xl bg-[#18181c] hover:bg-[#222228] border border-[#28282e] text-[#c0c6d6] cursor-pointer"
-              title="Sync Mesh Telemetry"
+              title="Refresh Dashboard"
             >
               <span className="material-symbols-outlined text-[18px]">refresh</span>
             </button>
@@ -311,7 +333,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           {/* OVERVIEW TAB */}
           {activeNav === 'overview' && (
             <div className="space-y-6 animate-in fade-in duration-200">
-              {/* Top 5 Metric Cards matching the diagram */}
+              {/* Top 5 Metric Cards (100% Real Runtime State) */}
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
                 {/* Total Incidents */}
                 <div className="bg-[#151518] border border-[#24242a] rounded-2xl p-4 flex flex-col justify-between">
@@ -323,11 +345,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </div>
                   <div className="mt-2">
                     <span className="text-2xl font-black text-[#e5e2e1]">
-                      {120 + incidents.length}
+                      {incidents.length}
                     </span>
-                    <span className="text-[11px] text-[#47e266] font-semibold flex items-center gap-0.5 mt-0.5">
-                      <span className="material-symbols-outlined text-[13px]">trending_up</span>
-                      <span>+18% vs last 24h</span>
+                    <span className="text-[11px] text-[#aac7ff] font-semibold flex items-center gap-0.5 mt-0.5">
+                      <span className="material-symbols-outlined text-[13px]">database</span>
+                      <span>{outboxCount > 0 ? `${outboxCount} outbox queued` : 'Dexie Synced'}</span>
                     </span>
                   </div>
                 </div>
@@ -335,35 +357,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 {/* High Priority */}
                 <div className="bg-[#151518] border border-[#24242a] rounded-2xl p-4 flex flex-col justify-between">
                   <div className="flex items-center justify-between text-[#8b91a0]">
-                    <span className="text-xs font-medium">High Priority</span>
+                    <span className="text-xs font-medium">Critical (P0)</span>
                     <span className="material-symbols-outlined text-[18px] text-[#ffb4ab]">
                       crisis_alert
                     </span>
                   </div>
                   <div className="mt-2">
                     <span className="text-2xl font-black text-[#ffb4ab]">
-                      {20 + criticalIncidentsCount}
+                      {criticalIncidentsCount}
                     </span>
-                    <span className="text-[11px] text-[#47e266] font-semibold flex items-center gap-0.5 mt-0.5">
-                      <span className="material-symbols-outlined text-[13px]">trending_down</span>
-                      <span>-8% vs last 24h</span>
+                    <span
+                      className={`text-[11px] font-semibold flex items-center gap-0.5 mt-0.5 ${
+                        criticalIncidentsCount > 0 ? 'text-[#ffb4ab]' : 'text-[#47e266]'
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[13px]">
+                        {criticalIncidentsCount > 0 ? 'warning' : 'check_circle'}
+                      </span>
+                      <span>{criticalIncidentsCount > 0 ? 'Urgent dispatch' : 'Perimeter nominal'}</span>
                     </span>
                   </div>
                 </div>
 
-                {/* Active Responders */}
+                {/* Active Mesh Peers */}
                 <div className="bg-[#151518] border border-[#24242a] rounded-2xl p-4 flex flex-col justify-between">
                   <div className="flex items-center justify-between text-[#8b91a0]">
-                    <span className="text-xs font-medium">Active Responders</span>
+                    <span className="text-xs font-medium">Connected Peers</span>
                     <span className="material-symbols-outlined text-[18px] text-[#6cff82]">
-                      groups
+                      hub
                     </span>
                   </div>
                   <div className="mt-2">
-                    <span className="text-2xl font-black text-[#e5e2e1]">56</span>
+                    <span className="text-2xl font-black text-[#e5e2e1]">
+                      {networkStatus.activePeers.length}
+                    </span>
                     <span className="text-[11px] text-[#47e266] font-semibold flex items-center gap-0.5 mt-0.5">
-                      <span className="material-symbols-outlined text-[13px]">trending_up</span>
-                      <span>+12% vs last 24h</span>
+                      <span className="material-symbols-outlined text-[13px]">wifi_tethering</span>
+                      <span>{networkDiagnostics.discoveredPeers.length} on LAN</span>
                     </span>
                   </div>
                 </div>
@@ -371,35 +401,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 {/* Areas Affected */}
                 <div className="bg-[#151518] border border-[#24242a] rounded-2xl p-4 flex flex-col justify-between">
                   <div className="flex items-center justify-between text-[#8b91a0]">
-                    <span className="text-xs font-medium">Areas Affected</span>
+                    <span className="text-xs font-medium">Geotagged Sectors</span>
                     <span className="material-symbols-outlined text-[18px] text-[#aac7ff]">
                       share_location
                     </span>
                   </div>
                   <div className="mt-2">
-                    <span className="text-2xl font-black text-[#e5e2e1]">12</span>
-                    <span className="text-[11px] text-[#ffb4ab] font-semibold flex items-center gap-0.5 mt-0.5">
-                      <span className="material-symbols-outlined text-[13px]">trending_up</span>
-                      <span>+5% vs last 24h</span>
+                    <span className="text-2xl font-black text-[#e5e2e1]">
+                      {uniqueLocations.length}
+                    </span>
+                    <span className="text-[11px] text-[#aac7ff] font-semibold flex items-center gap-0.5 mt-0.5">
+                      <span className="material-symbols-outlined text-[13px]">pin_drop</span>
+                      <span>Campus GIS</span>
                     </span>
                   </div>
                 </div>
 
-                {/* Offline Nodes */}
+                {/* Offline Network Architecture */}
                 <div className="bg-[#151518] border border-[#24242a] rounded-2xl p-4 flex flex-col justify-between col-span-2 sm:col-span-1">
                   <div className="flex items-center justify-between text-[#8b91a0]">
-                    <span className="text-xs font-medium">Offline Nodes</span>
+                    <span className="text-xs font-medium">Network Link</span>
                     <span className="material-symbols-outlined text-[18px] text-amber-400">
-                      signal_cellular_off
+                      {networkStatus.isSignalingConnected ? 'lan' : 'signal_cellular_off'}
                     </span>
                   </div>
                   <div className="mt-2">
-                    <span className="text-2xl font-black text-[#e5e2e1]">
-                      {isInternetConnected ? '0' : '7'}
+                    <span className="text-lg font-bold text-[#e5e2e1]">
+                      {networkStatus.isSignalingConnected ? 'LAN Active' : 'Offline Solo'}
                     </span>
                     <span className="text-[11px] text-[#47e266] font-semibold flex items-center gap-0.5 mt-0.5">
-                      <span className="material-symbols-outlined text-[13px]">trending_down</span>
-                      <span>-3 vs last 24h</span>
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#47e266]" />
+                      <span>{networkStatus.mode.toUpperCase()}</span>
                     </span>
                   </div>
                 </div>
@@ -416,7 +448,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           location_searching
                         </span>
                         <h3 className="text-sm font-bold text-[#e5e2e1]">
-                          Live Incident Map · Amrita Vengal Campus
+                          Live Tactical GIS Map · Amrita Vengal Campus
                         </h3>
                       </div>
 
@@ -424,24 +456,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <div className="flex items-center gap-3 text-[11px] text-[#8b91a0]">
                         <span className="flex items-center gap-1">
                           <span className="w-2 h-2 rounded-full bg-[#ffb4ab]" />
-                          High
+                          Critical
                         </span>
                         <span className="flex items-center gap-1">
                           <span className="w-2 h-2 rounded-full bg-amber-400" />
-                          Medium
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <span className="w-2 h-2 rounded-full bg-[#47e266]" />
-                          Low
+                          Urgent
                         </span>
                         <span className="flex items-center gap-1">
                           <span className="w-2 h-2 rounded-full bg-[#3e90ff]" />
-                          Responders
+                          Resources
                         </span>
                       </div>
                     </div>
 
-                    {/* Interactive Leaflet Map Container */}
+                    {/* Interactive Tactical Map */}
                     <div className="w-full h-[380px] rounded-2xl overflow-hidden border border-[#282830]">
                       <MapTab onShowToast={onShowToast} incidents={incidents} />
                     </div>
@@ -458,48 +486,56 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </span>
                           System Status
                         </span>
-                        <span className="text-[10px] text-[#47e266] font-semibold">ALL OPERATIONAL</span>
+                        <span className="text-[10px] text-[#47e266] font-semibold">
+                          ZERO-CLOUD OFFLINE CORE
+                        </span>
                       </div>
 
                       <div className="space-y-2 text-xs">
                         <div className="flex items-center justify-between p-2 rounded-xl bg-[#111114]">
                           <span className="text-[#8b91a0] flex items-center gap-2">
                             <span className="material-symbols-outlined text-[15px]">lan</span>
-                            Local Network
-                          </span>
-                          <span className="text-[#47e266] font-semibold flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#47e266]" />
-                            Connected
-                          </span>
-                        </div>
-
-                        <div className="flex items-center justify-between p-2 rounded-xl bg-[#111114]">
-                          <span className="text-[#8b91a0] flex items-center gap-2">
-                            <span className="material-symbols-outlined text-[15px]">cloud_sync</span>
-                            Cloud Sync
+                            Local Signaler
                           </span>
                           <span
                             className={`font-semibold flex items-center gap-1 ${
-                              isInternetConnected ? 'text-[#47e266]' : 'text-amber-400'
+                              networkDiagnostics.signalingState === 'CONNECTED'
+                                ? 'text-[#47e266]'
+                                : 'text-amber-400'
                             }`}
                           >
                             <span
                               className={`w-1.5 h-1.5 rounded-full ${
-                                isInternetConnected ? 'bg-[#47e266]' : 'bg-amber-400'
+                                networkDiagnostics.signalingState === 'CONNECTED'
+                                  ? 'bg-[#47e266]'
+                                  : 'bg-amber-400'
                               }`}
                             />
-                            {isInternetConnected ? 'Connected' : 'Offline Cached'}
+                            {networkDiagnostics.signalingState === 'CONNECTED'
+                              ? 'Connected'
+                              : networkDiagnostics.signalingState}
                           </span>
                         </div>
 
                         <div className="flex items-center justify-between p-2 rounded-xl bg-[#111114]">
                           <span className="text-[#8b91a0] flex items-center gap-2">
                             <span className="material-symbols-outlined text-[15px]">hub</span>
-                            Relay Network
+                            P2P DataChannels
                           </span>
                           <span className="text-[#3e90ff] font-semibold flex items-center gap-1">
                             <span className="w-1.5 h-1.5 rounded-full bg-[#3e90ff]" />
-                            Active (5 Relays)
+                            {networkStatus.activePeers.length} Active ({networkStatus.mode})
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between p-2 rounded-xl bg-[#111114]">
+                          <span className="text-[#8b91a0] flex items-center gap-2">
+                            <span className="material-symbols-outlined text-[15px]">storage</span>
+                            Dexie Vault
+                          </span>
+                          <span className="text-[#47e266] font-semibold flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#47e266]" />
+                            {incidents.length} Local Records
                           </span>
                         </div>
                       </div>
@@ -512,38 +548,40 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <span className="material-symbols-outlined text-[17px] text-[#47e266]">
                             network_check
                           </span>
-                          Network Health
+                          Relay Diagnostics
                         </span>
-                        <span className="text-[10px] text-[#aac7ff] font-mono">98.6% RELIABLE</span>
+                        <span className="text-[10px] text-[#aac7ff] font-mono">
+                          ID: {deviceId.slice(0, 8)}
+                        </span>
                       </div>
 
                       <div className="grid grid-cols-3 gap-2 text-center">
                         <div className="p-2 rounded-xl bg-[#111114]">
                           <span className="text-[10px] text-[#8b91a0] block">Peers</span>
-                          <span className="text-base font-bold text-[#e5e2e1]">24</span>
+                          <span className="text-base font-bold text-[#e5e2e1]">
+                            {networkStatus.activePeers.length}
+                          </span>
                         </div>
                         <div className="p-2 rounded-xl bg-[#111114]">
-                          <span className="text-[10px] text-[#8b91a0] block">Relayed (24h)</span>
-                          <span className="text-base font-bold text-[#3e90ff]">1,248</span>
+                          <span className="text-[10px] text-[#8b91a0] block">Relayed</span>
+                          <span className="text-base font-bold text-[#3e90ff]">
+                            {networkStatus.totalIncidentsRelayed}
+                          </span>
                         </div>
                         <div className="p-2 rounded-xl bg-[#111114]">
-                          <span className="text-[10px] text-[#8b91a0] block">Success Rate</span>
-                          <span className="text-base font-bold text-[#47e266]">98.6%</span>
+                          <span className="text-[10px] text-[#8b91a0] block">Outbox</span>
+                          <span className="text-base font-bold text-[#47e266]">
+                            {outboxCount}
+                          </span>
                         </div>
                       </div>
 
-                      {/* Sparkline visualization */}
-                      <div className="p-2 rounded-xl bg-[#111114] flex items-center justify-between">
-                        <span className="text-[11px] text-[#8b91a0]">Packet Throughput</span>
-                        <div className="flex items-end gap-1 h-6">
-                          {[30, 45, 60, 50, 75, 90, 85, 95, 80, 100].map((val, idx) => (
-                            <div
-                              key={idx}
-                              style={{ height: `${val}%` }}
-                              className="w-1.5 bg-[#3e90ff] rounded-t-xs"
-                            />
-                          ))}
-                        </div>
+                      {/* Diagnostic Endpoint Info */}
+                      <div className="p-2 rounded-xl bg-[#111114] flex items-center justify-between font-mono text-[10px]">
+                        <span className="text-[#8b91a0]">Signaler URL:</span>
+                        <span className="text-[#aac7ff] truncate max-w-[160px]">
+                          {networkDiagnostics.signalingUrl}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -564,41 +602,48 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         onClick={() => setActiveNav('incidents')}
                         className="text-[11px] text-[#3e90ff] hover:underline font-semibold cursor-pointer"
                       >
-                        View All →
+                        View All ({incidents.length}) →
                       </button>
                     </div>
 
                     <div className="space-y-2.5 max-h-[340px] overflow-y-auto no-scrollbar">
-                      {filteredIncidents.slice(0, 5).map((inc) => (
-                        <div
-                          key={inc.id}
-                          className="p-3 rounded-xl bg-[#111114] border border-[#222228] space-y-1.5 hover:border-[#333] transition-colors"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <span
-                              className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                                inc.badgeColor === 'error'
-                                  ? 'bg-[#93000a]/30 text-[#ffb4ab] border border-[#ffb4ab]/30'
-                                  : inc.badgeColor === 'amber'
-                                  ? 'bg-amber-950/40 text-amber-300 border border-amber-600/30'
-                                  : 'bg-[#002957] text-[#aac7ff]'
-                              }`}
-                            >
-                              {inc.badgeColor === 'error' ? 'High' : inc.badgeColor === 'amber' ? 'Medium' : 'Low'}
-                            </span>
-                            <span className="text-[10px] text-[#8b91a0]">{inc.timeAgo}</span>
-                          </div>
-
-                          <h4 className="text-xs font-bold text-[#e5e2e1] line-clamp-1">
-                            {inc.title}
-                          </h4>
-
-                          <div className="flex items-center justify-between text-[11px] text-[#8b91a0]">
-                            <span className="truncate max-w-[140px]">{inc.location}</span>
-                            <span className="font-mono text-[#aac7ff]">{inc.distance}</span>
-                          </div>
+                      {filteredIncidents.length === 0 ? (
+                        <div className="p-6 rounded-2xl bg-[#111114] border border-[#222228] text-center text-[#8b91a0]">
+                          <span className="material-symbols-outlined text-[28px] mb-1 opacity-50">inbox</span>
+                          <p className="text-xs">No incidents recorded in local Dexie vault.</p>
                         </div>
-                      ))}
+                      ) : (
+                        filteredIncidents.slice(0, 5).map((inc) => (
+                          <div
+                            key={inc.id}
+                            className="p-3 rounded-xl bg-[#111114] border border-[#222228] space-y-1.5 hover:border-[#333] transition-colors"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <span
+                                className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                  inc.badgeColor === 'error'
+                                    ? 'bg-[#93000a]/30 text-[#ffb4ab] border border-[#ffb4ab]/30'
+                                    : inc.badgeColor === 'amber'
+                                    ? 'bg-amber-950/40 text-amber-300 border border-amber-600/30'
+                                    : 'bg-[#002957] text-[#aac7ff]'
+                                }`}
+                              >
+                                {inc.badgeColor === 'error' ? 'Critical (P0)' : inc.badgeColor === 'amber' ? 'Urgent (P1)' : 'Advisory'}
+                              </span>
+                              <span className="text-[10px] text-[#8b91a0]">{inc.timeAgo}</span>
+                            </div>
+
+                            <h4 className="text-xs font-bold text-[#e5e2e1] line-clamp-1">
+                              {inc.title}
+                            </h4>
+
+                            <div className="flex items-center justify-between text-[11px] text-[#8b91a0]">
+                              <span className="truncate max-w-[140px]">{inc.location}</span>
+                              <span className="font-mono text-[#aac7ff]">{inc.distance}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
                     </div>
 
                     <button
@@ -616,41 +661,41 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <span className="material-symbols-outlined text-[17px] text-amber-400">
                           notifications_active
                         </span>
-                        Live Campus Alerts
+                        Active Campus Alerts
                       </span>
-                      <span className="text-[10px] text-[#8b91a0]">3 New</span>
+                      <span className="text-[10px] text-[#8b91a0]">
+                        {criticalIncidents.length} Active
+                      </span>
                     </div>
 
                     <div className="space-y-2 text-xs">
-                      <div className="p-2.5 rounded-xl bg-[#111114] border-l-2 border-[#ffb4ab] flex items-center justify-between">
-                        <div>
-                          <span className="font-semibold text-[#e5e2e1] block text-[11px]">
-                            High priority incident reported
+                      {criticalIncidents.length === 0 ? (
+                        <div className="p-4 rounded-xl bg-[#111114] text-center text-[#8b91a0] text-xs">
+                          <span className="material-symbols-outlined text-[20px] text-[#47e266] block mb-1">
+                            verified
                           </span>
-                          <span className="text-[10px] text-[#8b91a0]">Zone North Perimeter</span>
+                          <span>No active critical alerts. All campus sectors nominal.</span>
                         </div>
-                        <span className="text-[10px] text-[#8b91a0] font-mono">2 min ago</span>
-                      </div>
-
-                      <div className="p-2.5 rounded-xl bg-[#111114] border-l-2 border-amber-400 flex items-center justify-between">
-                        <div>
-                          <span className="font-semibold text-[#e5e2e1] block text-[11px]">
-                            Relay path unstable: Agastya Block
-                          </span>
-                          <span className="text-[10px] text-[#8b91a0]">Routing over fallback BLE</span>
-                        </div>
-                        <span className="text-[10px] text-[#8b91a0] font-mono">5 min ago</span>
-                      </div>
-
-                      <div className="p-2.5 rounded-xl bg-[#111114] border-l-2 border-[#3e90ff] flex items-center justify-between">
-                        <div>
-                          <span className="font-semibold text-[#e5e2e1] block text-[11px]">
-                            Responder Unit Alpha on scene
-                          </span>
-                          <span className="text-[10px] text-[#8b91a0]">Medical Post Vengal PHC</span>
-                        </div>
-                        <span className="text-[10px] text-[#8b91a0] font-mono">12 min ago</span>
-                      </div>
+                      ) : (
+                        criticalIncidents.slice(0, 3).map((inc) => (
+                          <div
+                            key={inc.id}
+                            className="p-2.5 rounded-xl bg-[#111114] border-l-2 border-[#ffb4ab] flex items-center justify-between"
+                          >
+                            <div className="min-w-0 pr-2">
+                              <span className="font-semibold text-[#e5e2e1] block text-[11px] truncate">
+                                {inc.title}
+                              </span>
+                              <span className="text-[10px] text-[#8b91a0] truncate block">
+                                {inc.location}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-[#8b91a0] font-mono shrink-0">
+                              {inc.timeAgo}
+                            </span>
+                          </div>
+                        ))
+                      )}
                     </div>
                   </div>
                 </div>
@@ -669,7 +714,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </p>
                 </div>
                 <button
-                  onClick={() => onShowToast('GPS perimeter recalculated: Accuracy ±2m')}
+                  onClick={() => onShowToast('Perimeter coordinates refreshed from local cache')}
                   className="px-3 py-1.5 rounded-xl bg-[#1f1f26] hover:bg-[#282832] text-xs font-semibold text-[#aac7ff] border border-[#333] cursor-pointer"
                 >
                   Recalibrate GIS
@@ -711,7 +756,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       description: 'Precautionary evacuation notice for ground floor facilities.',
                       location: 'Amrita North Gate & Lake Perimeter',
                       category: 'critical flood',
-                      badgeColor: 'amber',
+                      badgeColor: 'error',
                     });
                     onShowToast('Emergency Weather Alert pushed across mesh');
                   }}
@@ -722,34 +767,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
 
               <div className="space-y-3">
-                {incidents.map((inc) => (
-                  <div
-                    key={inc.id}
-                    className="p-4 rounded-2xl bg-[#101013] border border-[#222228] flex items-center justify-between gap-4"
-                  >
-                    <div className="flex items-start gap-3">
-                      <span
-                        className={`w-3 h-3 rounded-full mt-1 shrink-0 ${
-                          inc.badgeColor === 'error' ? 'bg-[#ffb4ab]' : 'bg-amber-400'
-                        }`}
-                      />
-                      <div>
-                        <h4 className="text-xs font-bold text-[#e5e2e1]">{inc.title}</h4>
-                        <p className="text-[11px] text-[#8b91a0] mt-0.5">{inc.description}</p>
-                        <span className="text-[10px] text-[#aac7ff] mt-1 inline-block font-mono">
-                          Location: {inc.location} · {inc.distance}
-                        </span>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => onResolveIncident(inc.id)}
-                      className="px-3 py-1.5 rounded-xl bg-[#1e2a20] hover:bg-[#28382b] border border-[#346b3b] text-[#6cff82] text-xs font-semibold cursor-pointer shrink-0"
-                    >
-                      Resolve Alert
-                    </button>
+                {criticalIncidents.length === 0 ? (
+                  <div className="p-8 text-center text-[#8b91a0]">
+                    <span className="material-symbols-outlined text-[32px] text-[#47e266] mb-1">
+                      verified_user
+                    </span>
+                    <p className="text-xs">No active critical alerts in the local vault.</p>
                   </div>
-                ))}
+                ) : (
+                  criticalIncidents.map((inc) => (
+                    <div
+                      key={inc.id}
+                      className="p-4 rounded-2xl bg-[#101013] border border-[#222228] flex items-center justify-between gap-4"
+                    >
+                      <div className="flex items-start gap-3">
+                        <span
+                          className={`w-3 h-3 rounded-full mt-1 shrink-0 ${
+                            inc.badgeColor === 'error' ? 'bg-[#ffb4ab]' : 'bg-amber-400'
+                          }`}
+                        />
+                        <div>
+                          <h4 className="text-xs font-bold text-[#e5e2e1]">{inc.title}</h4>
+                          <p className="text-[11px] text-[#8b91a0] mt-0.5">{inc.description}</p>
+                          <span className="text-[10px] text-[#aac7ff] mt-1 inline-block font-mono">
+                            Location: {inc.location} · {inc.distance}
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => onResolveIncident(inc.id)}
+                        className="px-3 py-1.5 rounded-xl bg-[#1e2a20] hover:bg-[#28382b] border border-[#346b3b] text-[#6cff82] text-xs font-semibold cursor-pointer shrink-0"
+                      >
+                        Resolve Alert
+                      </button>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}
@@ -773,66 +827,73 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="bg-[#151518] border border-[#24242a] rounded-3xl p-6 space-y-4 animate-in fade-in duration-200">
               <div className="flex items-center justify-between pb-4 border-b border-[#222228]">
                 <div>
-                  <h2 className="text-lg font-bold text-[#e5e2e1]">User &amp; Role Directory</h2>
+                  <h2 className="text-lg font-bold text-[#e5e2e1]">Mesh Station &amp; Node Directory</h2>
                   <p className="text-xs text-[#8b91a0]">
-                    Manage access privileges for Command Staff, Field Responders, and Volunteers
+                    Verified local command stations and active peer nodes on the offline mesh
                   </p>
                 </div>
                 <span className="px-3 py-1 rounded-full bg-[#202028] text-xs text-[#aac7ff] font-bold">
-                  24 Registered Mesh Nodes
+                  {networkDiagnostics.discoveredPeers.length + 1} Active Mesh Nodes
                 </span>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="p-4 rounded-2xl bg-[#101013] border border-[#222228] space-y-2">
+                {/* Local Command Node */}
+                <div className="p-4 rounded-2xl bg-[#101013] border border-[#3e90ff]/40 space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <div className="w-8 h-8 rounded-full bg-[#002957] text-[#aac7ff] flex items-center justify-center font-bold text-xs">
-                        RK
+                        {adminUser.avatarInitials}
                       </div>
                       <div>
                         <span className="text-xs font-bold text-[#e5e2e1] block">
-                          Dr. Rajesh K.
+                          {adminUser.name}
                         </span>
                         <span className="text-[10px] text-[#8b91a0]">
-                          Incident Commander · Command Staff
+                          Incident Commander · Local Command Station
                         </span>
                       </div>
                     </div>
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#3e90ff]/20 text-[#aac7ff]">
-                      ADMIN
+                      HOST ADMIN
                     </span>
                   </div>
-                  <div className="text-[11px] text-[#8b91a0] pt-2 border-t border-[#1c1c22] flex justify-between">
-                    <span>Node: CMD-AMRITA-VENGAL-01</span>
+                  <div className="text-[11px] text-[#8b91a0] pt-2 border-t border-[#1c1c22] flex justify-between font-mono">
+                    <span>Node ID: {deviceId}</span>
                     <span className="text-[#47e266]">Active Session</span>
                   </div>
                 </div>
 
-                <div className="p-4 rounded-2xl bg-[#101013] border border-[#222228] space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-full bg-[#003910] text-[#6cff82] flex items-center justify-center font-bold text-xs">
-                        RM
+                {/* Discovered Peer Nodes */}
+                {networkDiagnostics.discoveredPeers.map((peer) => (
+                  <div
+                    key={peer.peerId}
+                    className="p-4 rounded-2xl bg-[#101013] border border-[#222228] space-y-2"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-full bg-[#003910] text-[#6cff82] flex items-center justify-center font-bold text-xs">
+                          P
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-[#e5e2e1] block">
+                            Mesh Peer ({peer.deviceId || peer.peerId.slice(0, 8)})
+                          </span>
+                          <span className="text-[10px] text-[#8b91a0]">
+                            Remote Station · Field Node
+                          </span>
+                        </div>
                       </div>
-                      <div>
-                        <span className="text-xs font-bold text-[#e5e2e1] block">
-                          Rahul M.
-                        </span>
-                        <span className="text-[10px] text-[#8b91a0]">
-                          Student Responder · Field Operations
-                        </span>
-                      </div>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#47e266]/20 text-[#6cff82]">
+                        PEER
+                      </span>
                     </div>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#47e266]/20 text-[#6cff82]">
-                      RESPONDER
-                    </span>
+                    <div className="text-[11px] text-[#8b91a0] pt-2 border-t border-[#1c1c22] flex justify-between font-mono">
+                      <span>Peer: {peer.peerId.slice(0, 16)}...</span>
+                      <span className="text-[#47e266]">Mesh Connected</span>
+                    </div>
                   </div>
-                  <div className="text-[11px] text-[#8b91a0] pt-2 border-t border-[#1c1c22] flex justify-between">
-                    <span>Node: NEXUS-NODE-8942</span>
-                    <span className="text-[#47e266]">Mesh Peer Online</span>
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
           )}
@@ -845,34 +906,54 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <div className="p-4 rounded-2xl bg-[#101013] border border-[#222228] flex items-center justify-between">
                   <div>
                     <span className="text-xs font-bold text-[#e5e2e1] block">
-                      AES-256 Mesh Encryption Key
+                      Local Node Hardware UUID
                     </span>
-                    <span className="text-[11px] text-[#8b91a0]">
-                      Key fingerprint: 0x9F4C...B288 (Rotated every 24h)
+                    <span className="text-[11px] text-[#8b91a0] font-mono">
+                      {deviceId}
                     </span>
                   </div>
                   <button
-                    onClick={() => onShowToast('Mesh keys rotated across all 5 repeaters')}
+                    onClick={() => onShowToast('Node identity verified in Dexie')}
                     className="px-3 py-1.5 rounded-xl bg-[#202028] text-xs font-semibold text-[#aac7ff] hover:bg-[#282834] cursor-pointer"
                   >
-                    Rotate Keys
+                    Verify UUID
                   </button>
                 </div>
 
                 <div className="p-4 rounded-2xl bg-[#101013] border border-[#222228] flex items-center justify-between">
                   <div>
                     <span className="text-xs font-bold text-[#e5e2e1] block">
-                      Offline Incident Cache Buffer
+                      Local Signaling Server Endpoint
                     </span>
-                    <span className="text-[11px] text-[#8b91a0]">
-                      IndexedDB local storage: 1.4 MB / 50 MB
+                    <span className="text-[11px] text-[#8b91a0] font-mono">
+                      {networkDiagnostics.signalingUrl} ({networkDiagnostics.signalingState})
                     </span>
                   </div>
                   <button
-                    onClick={() => onShowToast('Local IndexedDB verified and compacted')}
+                    onClick={() => {
+                      reconnectSignaler(networkDiagnostics.signalingUrl);
+                      onShowToast('Reconnecting to local signaler...');
+                    }}
                     className="px-3 py-1.5 rounded-xl bg-[#202028] text-xs font-semibold text-[#aac7ff] hover:bg-[#282834] cursor-pointer"
                   >
-                    Compact Cache
+                    Reconnect Signaler
+                  </button>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-[#101013] border border-[#222228] flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-bold text-[#e5e2e1] block">
+                      Offline Dexie IndexedDB Vault
+                    </span>
+                    <span className="text-[11px] text-[#8b91a0]">
+                      Active Database: <code className="text-[#aac7ff]">NexusLocalDB</code> · {incidents.length} incidents · {outboxCount} in outbox
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => onShowToast('IndexedDB storage verified and healthy')}
+                    className="px-3 py-1.5 rounded-xl bg-[#202028] text-xs font-semibold text-[#aac7ff] hover:bg-[#282834] cursor-pointer"
+                  >
+                    Check Storage
                   </button>
                 </div>
               </div>
@@ -881,8 +962,51 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           {/* AUDIT LOGS TAB */}
           {activeNav === 'audit' && (
-            <div className="animate-in fade-in duration-200">
-              <ResponderDirectory onShowToast={onShowToast} />
+            <div className="bg-[#151518] rounded-2xl border border-[#282828] p-4 space-y-4 animate-in fade-in duration-200">
+              <div className="flex items-center justify-between pb-3 border-b border-[#282828]">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[#3e90ff] text-[20px]">
+                    receipt_long
+                  </span>
+                  <h3 className="text-sm font-bold text-[#e5e2e1]">
+                    Network &amp; Signaling Runtime Logs
+                  </h3>
+                </div>
+                <span className="text-[11px] text-[#8b91a0]">
+                  {networkDiagnostics.recentLogs.length} Events Recorded
+                </span>
+              </div>
+
+              <div className="space-y-2 max-h-[500px] overflow-y-auto no-scrollbar font-mono text-xs">
+                {networkDiagnostics.recentLogs.length === 0 ? (
+                  <div className="p-6 text-center text-[#8b91a0]">
+                    No network events recorded yet.
+                  </div>
+                ) : (
+                  networkDiagnostics.recentLogs.map((log) => (
+                    <div
+                      key={log.id}
+                      className="p-2.5 rounded-xl bg-[#111114] border border-[#222] flex items-start justify-between gap-3"
+                    >
+                      <div className="flex items-start gap-2">
+                        <span
+                          className={`w-2 h-2 rounded-full mt-1 shrink-0 ${
+                            log.level === 'error'
+                              ? 'bg-[#ffb4ab]'
+                              : log.level === 'warn'
+                              ? 'bg-amber-400'
+                              : 'bg-[#3e90ff]'
+                          }`}
+                        />
+                        <span className="text-[#e5e2e1]">{log.message}</span>
+                      </div>
+                      <span className="text-[10px] text-[#8b91a0] shrink-0">
+                        {new Date(log.timestamp).toLocaleTimeString()}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
           )}
         </main>

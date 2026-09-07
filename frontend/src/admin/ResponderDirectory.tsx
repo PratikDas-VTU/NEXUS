@@ -34,9 +34,12 @@ export const ResponderDirectory: React.FC<ResponderDirectoryProps> = ({ onShowTo
             <span className="material-symbols-outlined text-[#3e90ff] text-[20px]">
               group_work
             </span>
-            <h3 className="text-sm font-bold text-[#e5e2e1]">
-              Field Responder Deployment Roster
-            </h3>
+            <div>
+              <h3 className="text-sm font-bold text-[#e5e2e1]">
+                Field Responder Deployment Roster
+              </h3>
+              <p className="text-[10px] text-[#8b91a0]">Offline Operational Directory · Amrita Campus Units</p>
+            </div>
           </div>
           <span className="text-[11px] text-[#47e266] font-medium flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-[#47e266]" />
