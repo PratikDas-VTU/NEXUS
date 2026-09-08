@@ -218,11 +218,7 @@ The compiled APK will be generated at:
 
 ---
 
-## 🎯 Final Judge Pitch Summary
 
-> *"When a cyclone or earthquake strikes, telecommunication towers go dark in seconds. NEXUS ensures that emergency communication doesn't die with the power grid. By transforming everyday smartphones into an offline, store-carry-forward physical mesh, NEXUS delivers life-saving coordination from the ground up—completely internet-independent."*
-
----
 
 <div align="center">
 
