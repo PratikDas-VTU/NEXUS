@@ -17,6 +17,13 @@ import {
   type DemoMeshEdge,
 } from '../services/demoMeshVisualization';
 import { useNearbyMesh } from '../hooks/useNearbyMesh';
+import {
+  findHighDensityClusters,
+  MIN_DENSITY_NODES,
+  DENSITY_RADIUS_METERS,
+  formatDensityLabel,
+  LocatableNode,
+} from '../services/densityClustering';
 
 interface MapTabProps {
   onShowToast: (msg: string) => void;
@@ -29,7 +36,7 @@ export const MapTab: React.FC<MapTabProps> = ({
   incidents = [],
   recalibrateSignal,
 }) => {
-  const { currentLocation, requestLocation, deviceId } = useNexusServices();
+  const { currentLocation, requestLocation, deviceId, locationState } = useNexusServices();
   const nearby = useNearbyMesh({ localDeviceId: deviceId });
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -40,6 +47,10 @@ export const MapTab: React.FC<MapTabProps> = ({
   const incidentMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const navRouteRef = useRef<L.Polyline | null>(null);
   const meshLinesRef = useRef<L.Polyline | null>(null);
+
+  // High-Density Area Overlay Refs (Rule: Translucent Red Region, Density != Emergency)
+  const densityCirclesRef = useRef<L.Circle[]>([]);
+  const densityLabelsRef = useRef<L.Marker[]>([]);
 
   // Demo Mesh & Real Peer Visualization Refs & State
   const demoMarkersRef = useRef<Map<string, L.Marker>>(new Map());
@@ -561,15 +572,20 @@ export const MapTab: React.FC<MapTabProps> = ({
     realPeerLinesRef.current.forEach((l) => map.removeLayer(l));
     realPeerLinesRef.current = [];
 
-    if (!userLocation || connectedPeers.length === 0) {
+    if (!userLocation) {
       return;
     }
 
-    // Offset connected peers slightly (~12-15m) so they don't visually occlude the user marker if co-located
-    connectedPeers.forEach((peer, idx) => {
-      const angle = (idx * Math.PI * 2) / Math.max(connectedPeers.length, 1);
-      const peerLat = userLocation.latitude + (Math.sin(angle) * 15) / 111139;
-      const peerLng = userLocation.longitude + (Math.cos(angle) * 15) / 108172;
+    // STRICT GPS INTEGRITY: Only plot physical peers with legitimate, verified GPS coordinates.
+    // Do NOT infer, fabricate, or anchor another physical node's coordinates to the local device location.
+    connectedPeers.forEach((peer) => {
+      const peerLat = (peer as any).latitude;
+      const peerLng = (peer as any).longitude;
+
+      if (peerLat === undefined || peerLat === null || peerLng === undefined || peerLng === null) {
+        // Peer has no known GPS coordinate -> Node -> GPS unavailable. Excluded from map.
+        return;
+      }
 
       const isSelected = selectedRealPeerId === peer.endpointId;
 
@@ -636,6 +652,88 @@ export const MapTab: React.FC<MapTabProps> = ({
       realPeerLinesRef.current.push(line);
     });
   }, [map, nearby.connectedNodes, userLocation, selectedRealPeerId]);
+
+  // 8. High-Density Node Clustering Overlay (Strict Rule: Translucent Red Region != Emergency)
+  useEffect(() => {
+    if (!map) return;
+
+    // Clean up previous density circles and labels
+    densityCirclesRef.current.forEach((circle) => map.removeLayer(circle));
+    densityCirclesRef.current = [];
+    densityLabelsRef.current.forEach((label) => map.removeLayer(label));
+    densityLabelsRef.current = [];
+
+    // Build operational nodes with legitimate GPS (Demo nodes strictly excluded)
+    const operationalNodes: LocatableNode[] = [];
+    if (userLocation) {
+      operationalNodes.push({
+        id: deviceId,
+        name: 'Local Host Station',
+        latitude: userLocation.latitude,
+        longitude: userLocation.longitude,
+        gpsQuality: 'live',
+        isDemo: false,
+      });
+    }
+
+    // Add physical peers that possess verified GPS
+    nearby.connectedNodes.forEach((peer) => {
+      const lat = (peer as any).latitude;
+      const lng = (peer as any).longitude;
+      if (lat !== undefined && lat !== null && lng !== undefined && lng !== null) {
+        operationalNodes.push({
+          id: peer.endpointId,
+          name: peer.endpointName,
+          latitude: lat,
+          longitude: lng,
+          gpsQuality: 'live',
+          isDemo: false,
+        });
+      }
+    });
+
+    const clusters = findHighDensityClusters(operationalNodes, MIN_DENSITY_NODES, DENSITY_RADIUS_METERS);
+
+    clusters.forEach((cluster) => {
+      // Translucent red density boundary
+      const circle = L.circle([cluster.centerLat, cluster.centerLng], {
+        radius: cluster.radiusMeters,
+        color: '#ef4444',
+        fillColor: '#ef4444',
+        fillOpacity: 0.18,
+        weight: 2,
+        dashArray: '6, 6',
+      }).addTo(map);
+
+      densityCirclesRef.current.push(circle);
+
+      // Centroid label badge
+      const labelHtml = `
+        <div class="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold whitespace-nowrap shadow-lg bg-[#2b1416]/95 text-[#ffb4ab] border border-[#ffb4ab]/40 backdrop-blur-md flex items-center gap-1 cursor-pointer">
+          <span class="w-1.5 h-1.5 rounded-full bg-[#ffb4ab]"></span>
+          <span>${cluster.nodeCount} NODES · ${cluster.radiusMeters}m · HIGH DENSITY</span>
+        </div>
+      `;
+
+      const labelIcon = L.divIcon({
+        className: 'custom-density-cluster-label',
+        html: labelHtml,
+        iconSize: [120, 20],
+        iconAnchor: [60, 10],
+      });
+
+      const labelMarker = L.marker([cluster.centerLat, cluster.centerLng], {
+        icon: labelIcon,
+        zIndexOffset: 150,
+      }).addTo(map);
+
+      labelMarker.on('click', () => {
+        onShowToast(`${formatDensityLabel(cluster)} (Personnel concentration · Density ≠ Emergency)`);
+      });
+
+      densityLabelsRef.current.push(labelMarker);
+    });
+  }, [map, userLocation, nearby.connectedNodes, deviceId, onShowToast]);
 
   // Fit perimeter across all nodes (Rule 16: demo coordinates included only while showDemoMesh is ON)
   const fitPerimeter = () => {
@@ -762,77 +860,64 @@ export const MapTab: React.FC<MapTabProps> = ({
       <div className="pointer-events-none absolute top-0 inset-x-0 h-28 bg-gradient-to-b from-[#131313]/90 via-[#131313]/40 to-transparent z-10" />
 
       {/* Top Controls Header */}
-      <div className="absolute top-3 inset-x-3 flex flex-col gap-2 z-20 pointer-events-none">
+      <div className="absolute top-2.5 inset-x-2.5 flex flex-col gap-2 z-20 pointer-events-none">
         <div className="flex items-center justify-between w-full gap-2">
           {/* Left Controls: Status Chip & Demo Mesh Toggle */}
           <div className="flex items-center gap-1.5 flex-wrap">
             {/* Status Chip */}
-            <div className="pointer-events-auto flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#1c1b1b]/95 backdrop-blur-xl shadow-lg border border-[#2a2a2a]">
-              <span className="w-2 h-2 rounded-full bg-[#47e266] animate-pulse" />
-              <span className="text-[12px] text-[#e5e2e1] font-semibold">
+            <div className="pointer-events-auto flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#16181b]/95 backdrop-blur-md border border-[#252830]">
+              <span className="w-2 h-2 rounded-full bg-[#47e266]" />
+              <span className="text-xs text-[#e6e8eb] font-semibold font-mono">
                 {userLocation
-                  ? `GPS: ${userLocation.latitude.toFixed(3)}, ${userLocation.longitude.toFixed(3)}`
-                  : 'Offline Tactical Map'}
+                  ? `${userLocation.latitude.toFixed(3)}, ${userLocation.longitude.toFixed(3)}`
+                  : 'Tactical Map'}
               </span>
             </div>
 
-            {/* Demo Mesh Toggle Button */}
+            {/* Demo Mesh Toggle Button - Clearly Distinct Simulation */}
             <button
               aria-label="Toggle Demo Mesh Visualization"
               onClick={handleToggleDemoMesh}
-              className={`pointer-events-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-full backdrop-blur-xl shadow-lg border text-[11px] font-bold transition-all active:scale-95 cursor-pointer ${
+              className={`pointer-events-auto flex items-center gap-1 px-2.5 py-1 rounded-full backdrop-blur-md border text-[11px] font-semibold transition-colors cursor-pointer ${
                 showDemoMesh
-                  ? 'bg-[#581c87]/90 text-[#f3e8ff] border-[#a855f7] shadow-[0_0_12px_rgba(168,85,247,0.35)]'
-                  : 'bg-[#1c1b1b]/95 text-[#8b91a0] border-[#2a2a2a] hover:text-[#e5e2e1]'
+                  ? 'bg-[#4a1d6e]/95 text-[#f3e8ff] border-[#9333ea]'
+                  : 'bg-[#16181b]/95 text-[#9da4b0] border-[#252830] hover:text-[#e6e8eb]'
               }`}
               type="button"
               title={showDemoMesh ? 'Demo Mesh Topology: ON (Click to disable)' : 'Demo Mesh Topology: OFF (Click to enable)'}
             >
               <span className="material-symbols-outlined text-[15px]">
-                {showDemoMesh ? 'hub' : 'device_hub'}
+                {showDemoMesh ? 'science' : 'hub'}
               </span>
-              <span>{showDemoMesh ? 'Demo Mesh: ON' : 'Demo Mesh: OFF'}</span>
+              <span>{showDemoMesh ? 'DEMO: ON' : 'Demo: Off'}</span>
             </button>
           </div>
 
-          {/* Right Controls Stack */}
-          <div className="pointer-events-auto flex items-center gap-1.5">
+          {/* Right Controls Stack - Grouped Toolbar */}
+          <div className="pointer-events-auto flex items-center gap-1 bg-[#16181b]/95 backdrop-blur-md p-1 rounded-xl border border-[#252830]">
             {/* Zoom In Button */}
             <button
               aria-label="Zoom in"
               onClick={handleZoomIn}
-              className="w-9 h-9 rounded-xl bg-[#1c1b1b]/90 backdrop-blur-xl shadow-md flex items-center justify-center text-[#e5e2e1] hover:bg-[#2a2a2a] active:scale-95 transition-all cursor-pointer border border-[#2a2a2a]"
+              className="w-7.5 h-7.5 rounded-lg flex items-center justify-center text-[#9da4b0] hover:text-[#e6e8eb] hover:bg-[#20242a] active:scale-95 transition-colors cursor-pointer"
               type="button"
               title="Zoom in"
             >
-              <span className="material-symbols-outlined text-[18px]">add</span>
+              <span className="material-symbols-outlined text-[17px]">add</span>
             </button>
 
             {/* Zoom Out Button */}
             <button
               aria-label="Zoom out"
               onClick={handleZoomOut}
-              className="w-9 h-9 rounded-xl bg-[#1c1b1b]/90 backdrop-blur-xl shadow-md flex items-center justify-center text-[#e5e2e1] hover:bg-[#2a2a2a] active:scale-95 transition-all cursor-pointer border border-[#2a2a2a]"
+              className="w-7.5 h-7.5 rounded-lg flex items-center justify-center text-[#9da4b0] hover:text-[#e6e8eb] hover:bg-[#20242a] active:scale-95 transition-colors cursor-pointer"
               type="button"
               title="Zoom out"
             >
-              <span className="material-symbols-outlined text-[18px]">remove</span>
+              <span className="material-symbols-outlined text-[17px]">remove</span>
             </button>
 
-            {/* Search Pill */}
-            {dynamicBeacons.length > 0 && (
-              <button
-                aria-label="Search map"
-                onClick={() => setShowSearch(!showSearch)}
-                className={`w-9 h-9 rounded-xl backdrop-blur-xl shadow-md flex items-center justify-center transition-all active:scale-95 cursor-pointer border ${
-                  showSearch ? 'bg-[#3e90ff] text-[#002957] border-[#3e90ff]' : 'bg-[#1c1b1b]/90 text-[#e5e2e1] hover:bg-[#2a2a2a] border-[#2a2a2a]'
-                }`}
-                type="button"
-                title="Search Beacons"
-              >
-                <span className="material-symbols-outlined text-[18px]">search</span>
-              </button>
-            )}
+            <span className="w-px h-4 bg-[#252830] mx-0.5" />
 
             {/* Layers Toggle (Street Map vs Dark Tactical) */}
             <button
@@ -842,39 +927,39 @@ export const MapTab: React.FC<MapTabProps> = ({
                 setIsDarkTacticalLayer(next);
                 onShowToast(next ? 'Dark Tactical map active' : 'Street Map tiles active');
               }}
-              className={`w-9 h-9 rounded-xl backdrop-blur-xl shadow-md flex items-center justify-center transition-all active:scale-95 cursor-pointer border ${
-                isDarkTacticalLayer ? 'bg-[#2a2a2a] text-[#aac7ff] border-[#3e90ff]/50' : 'bg-[#1c1b1b]/90 text-[#8b91a0] border-[#2a2a2a]'
+              className={`w-7.5 h-7.5 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
+                isDarkTacticalLayer ? 'bg-[#20242a] text-[#aac7ff]' : 'text-[#9da4b0] hover:text-[#e6e8eb] hover:bg-[#20242a]'
               }`}
               id="layer-btn"
               type="button"
               title={isDarkTacticalLayer ? 'Switch to Street Map' : 'Switch to Dark Tactical'}
             >
-              <span className="material-symbols-outlined text-[18px]">layers</span>
+              <span className="material-symbols-outlined text-[17px]">layers</span>
             </button>
 
             {/* Fit Perimeter / All Nodes Button */}
             <button
               aria-label="Fit all nodes"
               onClick={fitPerimeter}
-              className="w-9 h-9 rounded-xl bg-[#1c1b1b]/90 backdrop-blur-xl shadow-md flex items-center justify-center text-[#aac7ff] hover:bg-[#2a2a2a] transition-all active:scale-95 cursor-pointer border border-[#2a2a2a]"
+              className="w-7.5 h-7.5 rounded-lg flex items-center justify-center text-[#9da4b0] hover:text-[#aac7ff] hover:bg-[#20242a] transition-colors cursor-pointer"
               type="button"
               title="Fit Perimeter (All Hops & Beacons)"
             >
-              <span className="material-symbols-outlined text-[18px]">fit_screen</span>
+              <span className="material-symbols-outlined text-[17px]">fit_screen</span>
             </button>
 
             {/* Use My Location / GPS Pill */}
             <button
               aria-label="Use My Location"
               onClick={handleRecenter}
-              className={`w-9 h-9 rounded-xl bg-[#1c1b1b]/90 backdrop-blur-xl shadow-md flex items-center justify-center text-[#aac7ff] hover:bg-[#2a2a2a] transition-all active:scale-95 cursor-pointer border border-[#2a2a2a] ${
+              className={`w-7.5 h-7.5 rounded-lg flex items-center justify-center text-[#3e90ff] hover:bg-[#20242a] transition-colors cursor-pointer ${
                 isSpinningRecenter ? 'rotate-180 duration-500' : ''
               }`}
               id="recenter-btn"
               type="button"
               title="Use My Location"
             >
-              <span className="material-symbols-outlined text-[18px]" style={{ fontVariationSettings: "'FILL' 1" }}>
+              <span className="material-symbols-outlined text-[17px]" style={{ fontVariationSettings: "'FILL' 1" }}>
                 my_location
               </span>
             </button>
@@ -897,18 +982,18 @@ export const MapTab: React.FC<MapTabProps> = ({
                       mapInstanceRef.current.flyTo([inc.latitude, inc.longitude], 15, { duration: 0.8 });
                     }
                   }}
-                  className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold transition-all whitespace-nowrap cursor-pointer border shadow-sm ${
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap cursor-pointer border shadow-xs ${
                     isSelected
                       ? beacon.type === 'critical'
-                        ? 'bg-[#93000a] text-[#ffdad6] border-[#ffb4ab]/60'
+                        ? 'bg-[#331416] text-[#ffb4ab] border-[#592328]'
                         : beacon.type === 'amber'
-                        ? 'bg-amber-950 text-amber-200 border-amber-400/60'
-                        : 'bg-[#002957] text-[#aac7ff] border-[#3e90ff]/60'
-                      : 'bg-[#1c1b1b]/90 text-[#c0c6d6] border-[#2a2a2a] hover:bg-[#2a2a2a]'
+                        ? 'bg-[#2e2110] text-[#ffb84e] border-[#5e411b]'
+                        : 'bg-[#162030] text-[#aac7ff] border-[#293d5c]'
+                      : 'bg-[#16181b]/95 text-[#9da4b0] border-[#252830] hover:text-[#e6e8eb]'
                   }`}
                 >
                   <span className={`w-1.5 h-1.5 rounded-full ${
-                    beacon.type === 'critical' ? 'bg-[#ffb4ab]' : beacon.type === 'amber' ? 'bg-amber-400' : 'bg-[#3e90ff]'
+                    beacon.type === 'critical' ? 'bg-[#ffb4ab]' : beacon.type === 'amber' ? 'bg-[#ffb84e]' : 'bg-[#3e90ff]'
                   }`} />
                   <span>{beacon.label}</span>
                 </button>
@@ -920,15 +1005,12 @@ export const MapTab: React.FC<MapTabProps> = ({
 
       {/* Empty State Banner when no incidents in Dexie, no Demo Mesh active, and no real Nearby peers connected */}
       {dynamicBeacons.length === 0 && !showDemoMesh && nearby.connectedCount === 0 && (
-        <div className="absolute top-20 inset-x-4 z-20 flex flex-col items-center justify-center py-4 px-5 rounded-2xl bg-[#1c1b1b]/90 backdrop-blur-md border border-[#2a2a2a] text-center shadow-xl">
-          <div className="w-9 h-9 rounded-full bg-[#201f1f] flex items-center justify-center text-[#8b91a0] mb-2">
-            <span className="material-symbols-outlined text-[20px]">radar</span>
-          </div>
-          <span className="text-[13px] font-bold text-[#e5e2e1] uppercase tracking-wider mb-0.5">
-            No reported incidents nearby
+        <div className="absolute top-18 inset-x-4 z-20 flex flex-col items-center justify-center py-3.5 px-4 rounded-2xl bg-[#16181b]/90 backdrop-blur-md border border-[#252830] text-center shadow-lg max-w-sm mx-auto">
+          <span className="text-xs font-bold text-[#e6e8eb] uppercase tracking-wider mb-0.5">
+            Perimeter Clear
           </span>
-          <p className="text-[11.5px] text-[#8b91a0] max-w-[260px] leading-relaxed">
-            Perimeter clear. Reports created on this node or received via mesh will populate on the map in real-time.
+          <p className="text-[11px] text-[#9da4b0] leading-relaxed">
+            No active emergencies detected nearby. Real peer beacons and reports will appear in real-time.
           </p>
         </div>
       )}
@@ -974,122 +1056,122 @@ export const MapTab: React.FC<MapTabProps> = ({
       )}
 
       {/* Floating Bottom Sheet */}
-      <div className="mt-auto z-30 w-full px-2.5 pb-2.5">
-        <div className="w-full max-w-md mx-auto rounded-3xl bg-[#1c1b1b]/95 backdrop-blur-2xl shadow-[0_15px_40px_rgba(0,0,0,0.7)] p-4 transition-all duration-300 ease-out border border-[#2a2a2a]">
+      <div className="mt-auto z-30 w-full px-2.5 pb-2">
+        <div className="w-full max-w-md mx-auto rounded-2xl bg-[#16181b]/95 backdrop-blur-xl shadow-xl p-3.5 transition-all duration-200 ease-out border border-[#252830]">
           {selectedDemoNode ? (
             <>
               {/* Tactile Drag Handle */}
               <button
                 onClick={() => setIsSheetCollapsed(!isSheetCollapsed)}
-                className="w-full flex items-center justify-center py-1 -mt-1 mb-2 group cursor-pointer focus:outline-none"
+                className="w-full flex items-center justify-center py-0.5 -mt-1 mb-2 group cursor-pointer focus:outline-none"
                 title={isSheetCollapsed ? 'Expand panel' : 'Collapse panel'}
               >
-                <div className="w-10 h-1 rounded-full bg-[#414754] group-hover:bg-[#c084fc] transition-colors" />
+                <div className="w-8 h-1 rounded-full bg-[#373e48] group-hover:bg-[#9333ea] transition-colors" />
               </button>
 
               {isSheetCollapsed ? (
                 /* Collapsed Demo Node State */
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="w-2.5 h-2.5 rounded-full bg-[#c084fc] shrink-0 animate-pulse" />
+                    <span className="w-2 h-2 rounded-full bg-[#c084fc] shrink-0" />
                     <div className="flex flex-col truncate">
-                      <span className="text-[14px] font-bold text-[#e5e2e1] truncate">{selectedDemoNode.title}</span>
+                      <span className="text-sm font-semibold text-[#e6e8eb] truncate">{selectedDemoNode.title}</span>
                       <span className="text-[11px] text-[#d8b4fe]">{selectedDemoNode.role} · {selectedDemoNode.offsetDescription}</span>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       onClick={() => setSelectedDemoNodeId(null)}
-                      className="px-2.5 py-1.5 rounded-xl font-semibold text-xs bg-[#2a2a2a] text-[#e5e2e1] hover:bg-[#353535] cursor-pointer"
+                      className="px-2.5 py-1 rounded-lg text-xs font-medium bg-[#20242a] text-[#e6e8eb] hover:bg-[#282d36] border border-[#2e333d] cursor-pointer"
                     >
                       Deselect
                     </button>
                     <button
                       onClick={() => setIsSheetCollapsed(false)}
-                      className="w-8 h-8 rounded-xl bg-[#2a2a2a] text-[#e5e2e1] flex items-center justify-center cursor-pointer"
+                      className="w-7.5 h-7.5 rounded-lg bg-[#20242a] hover:bg-[#282d36] border border-[#2e333d] text-[#e6e8eb] flex items-center justify-center cursor-pointer"
                       title="Expand"
                     >
-                      <span className="material-symbols-outlined text-[18px]">expand_less</span>
+                      <span className="material-symbols-outlined text-[16px]">expand_less</span>
                     </button>
                   </div>
                 </div>
               ) : (
                 /* Expanded Demo Node State */
                 <>
-                  <div className="flex items-start justify-between gap-2 mb-3">
+                  <div className="flex items-start justify-between gap-2 mb-2.5">
                     <div className="flex flex-col">
                       <div className="flex items-center gap-2 mb-0.5">
-                        <span className="w-2.5 h-2.5 rounded-full bg-[#c084fc] animate-pulse" />
-                        <span className="text-[17px] text-[#e5e2e1] font-bold tracking-tight">
+                        <span className="w-2 h-2 rounded-full bg-[#c084fc]" />
+                        <span className="text-base text-[#e6e8eb] font-bold tracking-tight">
                           {selectedDemoNode.title}
                         </span>
                       </div>
-                      <div className="flex items-center gap-1.5 text-[12px] text-[#c0c6d6]">
+                      <div className="flex items-center gap-1.5 text-xs text-[#9da4b0]">
                         <span>{selectedDemoNode.role}</span>
-                        <span className="text-[#8b91a0]">•</span>
+                        <span>•</span>
                         <span className="text-[#d8b4fe] font-mono">{selectedDemoNode.offsetDescription}</span>
                       </div>
                     </div>
 
                     {/* Demo Visualization Pill */}
-                    <div className="px-2.5 py-1 rounded-full flex items-center gap-1 shadow-sm shrink-0 bg-[#3b0764] text-[#d8b4fe] border border-[#a855f7]/60">
-                      <span className="material-symbols-outlined text-[13px]">science</span>
+                    <div className="px-2 py-0.5 rounded-full flex items-center gap-1 shrink-0 bg-[#3b0764] text-[#d8b4fe] border border-[#9333ea]/60">
+                      <span className="material-symbols-outlined text-[12px]">science</span>
                       <span className="text-[10px] font-bold uppercase tracking-wider">DEMO NODE</span>
                     </div>
                   </div>
 
                   {/* Demo Telemetry Bar */}
-                  <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#201f1f] mb-2 border border-[#3b0764]/60">
+                  <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#1a1d21] mb-2 border border-[#3b0764]/40 text-xs">
                     <div className="flex items-center gap-2">
-                      <span className="material-symbols-outlined text-[16px] text-[#c084fc]">battery_charging_full</span>
-                      <span className="text-[12px] text-[#e5e2e1] font-mono">{selectedDemoNode.details.battery}</span>
-                      <span className="text-[#8b91a0] text-xs">•</span>
-                      <span className="text-[11px] text-[#c0c6d6]">{selectedDemoNode.details.simulatedSignal}</span>
+                      <span className="material-symbols-outlined text-[15px] text-[#c084fc]">battery_charging_full</span>
+                      <span className="text-xs text-[#e6e8eb] font-mono">{selectedDemoNode.details.battery}</span>
+                      <span className="text-[#6b7280]">•</span>
+                      <span className="text-[11px] text-[#9da4b0]">{selectedDemoNode.details.simulatedSignal}</span>
                     </div>
-                    <span className="text-[10px] font-mono text-[#a855f7] bg-[#2e1065] px-2 py-0.5 rounded border border-[#a855f7]/40">
+                    <span className="text-[10px] font-mono text-[#c084fc]">
                       isDemo: true
                     </span>
                   </div>
 
-                  {/* Geographic Distance Callout (Not Radio Range) */}
-                  <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#181226] mb-2.5 border border-[#a855f7]/30 text-xs">
-                    <span className="text-[#c0c6d6]">Geographic distance from local anchor:</span>
+                  {/* Geographic Distance Callout */}
+                  <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#16181b] mb-2 border border-[#252830] text-xs">
+                    <span className="text-[#9da4b0]">Geographic distance from anchor:</span>
                     <span className="font-mono font-bold text-[#d8b4fe]">{demoNodeDistanceToAnchor}</span>
                   </div>
 
                   {/* Isolation Assurance Banner */}
-                  <p className="text-[11px] text-[#8b91a0] leading-relaxed mb-3 bg-[#131313] p-2.5 rounded-xl border border-[#2a2a2a]">
-                    ℹ️ <strong>Geographic Demo Visualization Only:</strong> {selectedDemoNode.details.description} Not participating in radio mesh.
+                  <p className="text-[11px] text-[#9da4b0] leading-relaxed mb-3 bg-[#15171a] p-2.5 rounded-xl border border-[#252830]">
+                    <strong className="text-[#d8b4fe]">Simulated Node:</strong> {selectedDemoNode.details.description} Isolated from real radio packets.
                   </p>
 
                   {/* Actions */}
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setSelectedDemoNodeId(null)}
-                      className="flex-1 h-11 rounded-xl font-bold text-[13px] bg-[#2a2a2a] text-[#e5e2e1] hover:bg-[#353535] transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                      className="flex-1 h-10 rounded-xl font-medium text-xs bg-[#20242a] hover:bg-[#282d36] border border-[#2e333d] text-[#e6e8eb] transition-colors cursor-pointer flex items-center justify-center gap-1.5"
                       type="button"
                     >
-                      <span className="material-symbols-outlined text-[16px]">close</span>
+                      <span className="material-symbols-outlined text-[15px]">close</span>
                       <span>Deselect Demo Node</span>
                     </button>
                     <button
                       aria-label="Demo Node Details"
                       onClick={() => setShowInfoModal(true)}
-                      className="w-11 h-11 rounded-xl bg-[#2a2a2a] text-[#e5e2e1] flex items-center justify-center hover:bg-[#3a3939] active:scale-95 transition-all cursor-pointer border border-[#2a2a2a] shrink-0"
+                      className="w-10 h-10 rounded-xl bg-[#20242a] hover:bg-[#282d36] border border-[#2e333d] text-[#e6e8eb] flex items-center justify-center active:scale-95 transition-colors cursor-pointer shrink-0"
                       type="button"
                       title="Demo Node Details"
                     >
-                      <span className="material-symbols-outlined text-[20px]">info</span>
+                      <span className="material-symbols-outlined text-[18px]">info</span>
                     </button>
                     <button
                       aria-label="Collapse panel"
                       onClick={() => setIsSheetCollapsed(true)}
-                      className="w-11 h-11 rounded-xl bg-[#201f1f] text-[#8b91a0] hover:text-[#e5e2e1] flex items-center justify-center hover:bg-[#2a2a2a] active:scale-95 transition-all cursor-pointer border border-[#2a2a2a] shrink-0"
+                      className="w-10 h-10 rounded-xl bg-[#20242a] hover:bg-[#282d36] border border-[#2e333d] text-[#9da4b0] hover:text-[#e6e8eb] flex items-center justify-center active:scale-95 transition-colors cursor-pointer shrink-0"
                       type="button"
                       title="Minimize Panel"
                     >
-                      <span className="material-symbols-outlined text-[20px]">expand_more</span>
+                      <span className="material-symbols-outlined text-[18px]">expand_more</span>
                     </button>
                   </div>
                 </>
@@ -1100,64 +1182,64 @@ export const MapTab: React.FC<MapTabProps> = ({
               {/* Real Physical Nearby Peer State */}
               <button
                 onClick={() => setIsSheetCollapsed(!isSheetCollapsed)}
-                className="w-full flex items-center justify-center py-1 -mt-1 mb-2 group cursor-pointer focus:outline-none"
+                className="w-full flex items-center justify-center py-0.5 -mt-1 mb-2 group cursor-pointer focus:outline-none"
                 title={isSheetCollapsed ? 'Expand panel' : 'Collapse panel'}
               >
-                <div className="w-10 h-1 rounded-full bg-[#414754] group-hover:bg-[#47e266] transition-colors" />
+                <div className="w-8 h-1 rounded-full bg-[#373e48] group-hover:bg-[#47e266] transition-colors" />
               </button>
 
-              <div className="flex items-start justify-between gap-2 mb-3">
+              <div className="flex items-start justify-between gap-2 mb-2.5">
                 <div className="flex flex-col">
                   <div className="flex items-center gap-2 mb-0.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-[#47e266] animate-ping" />
-                    <span className="text-[17px] text-[#e5e2e1] font-bold tracking-tight">
+                    <span className="w-2 h-2 rounded-full bg-[#47e266]" />
+                    <span className="text-base text-[#e6e8eb] font-bold tracking-tight">
                       {selectedRealPeer.endpointName}
                     </span>
                   </div>
-                  <div className="flex items-center gap-1.5 text-[12px] text-[#c0c6d6]">
-                    <span>Real Physical Radio Peer</span>
-                    <span className="text-[#8b91a0]">•</span>
+                  <div className="flex items-center gap-1.5 text-xs text-[#9da4b0]">
+                    <span>Physical Nearby Peer</span>
+                    <span>•</span>
                     <span className="text-[#47e266] font-mono">{selectedRealPeer.status}</span>
                   </div>
                 </div>
 
-                <div className="px-2.5 py-1 rounded-full flex items-center gap-1 shadow-sm shrink-0 bg-[#142e1d] text-[#47e266] border border-[#2f6f3a]">
-                  <span className="material-symbols-outlined text-[13px]">nearby</span>
+                <div className="px-2 py-0.5 rounded-full flex items-center gap-1 shrink-0 bg-[#122a1b] text-[#47e266] border border-[#245831]">
+                  <span className="material-symbols-outlined text-[12px]">nearby</span>
                   <span className="text-[10px] font-bold uppercase tracking-wider">REAL PEER</span>
                 </div>
               </div>
 
-              <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#201f1f] mb-3 border border-[#2f6f3a]/60 text-xs text-[#c0c6d6]">
-                <span>Endpoint ID: <strong className="font-mono text-[#e5e2e1]">{selectedRealPeer.endpointId}</strong></span>
-                <span className="text-[#47e266] font-semibold">Solid Green Link</span>
+              <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#1a1d21] mb-3 border border-[#245831]/40 text-xs text-[#9da4b0]">
+                <span>ID: <strong className="font-mono text-[#e6e8eb]">{selectedRealPeer.endpointId}</strong></span>
+                <span className="text-[#47e266] font-medium">Solid Green Link</span>
               </div>
 
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setSelectedRealPeerId(null)}
-                  className="flex-1 h-11 rounded-xl font-bold text-[13px] bg-[#2a2a2a] text-[#e5e2e1] hover:bg-[#353535] transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                  className="flex-1 h-10 rounded-xl font-medium text-xs bg-[#20242a] hover:bg-[#282d36] border border-[#2e333d] text-[#e6e8eb] transition-colors cursor-pointer flex items-center justify-center gap-1.5"
                   type="button"
                 >
-                  <span className="material-symbols-outlined text-[16px]">close</span>
+                  <span className="material-symbols-outlined text-[15px]">close</span>
                   <span>Deselect Peer</span>
                 </button>
                 <button
                   aria-label="Peer Details"
                   onClick={() => setShowInfoModal(true)}
-                  className="w-11 h-11 rounded-xl bg-[#2a2a2a] text-[#e5e2e1] flex items-center justify-center hover:bg-[#3a3939] active:scale-95 transition-all cursor-pointer border border-[#2a2a2a] shrink-0"
+                  className="w-10 h-10 rounded-xl bg-[#20242a] hover:bg-[#282d36] border border-[#2e333d] text-[#e6e8eb] flex items-center justify-center active:scale-95 transition-colors cursor-pointer shrink-0"
                   type="button"
                   title="Peer Details"
                 >
-                  <span className="material-symbols-outlined text-[20px]">info</span>
+                  <span className="material-symbols-outlined text-[18px]">info</span>
                 </button>
                 <button
                   aria-label="Collapse panel"
                   onClick={() => setIsSheetCollapsed(true)}
-                  className="w-11 h-11 rounded-xl bg-[#201f1f] text-[#8b91a0] hover:text-[#e5e2e1] flex items-center justify-center hover:bg-[#2a2a2a] active:scale-95 transition-all cursor-pointer border border-[#2a2a2a] shrink-0"
+                  className="w-10 h-10 rounded-xl bg-[#20242a] hover:bg-[#282d36] border border-[#2e333d] text-[#9da4b0] hover:text-[#e6e8eb] flex items-center justify-center active:scale-95 transition-colors cursor-pointer shrink-0"
                   type="button"
                   title="Minimize Panel"
                 >
-                  <span className="material-symbols-outlined text-[20px]">expand_more</span>
+                  <span className="material-symbols-outlined text-[18px]">expand_more</span>
                 </button>
               </div>
             </>
@@ -1166,41 +1248,41 @@ export const MapTab: React.FC<MapTabProps> = ({
               {/* Tactile Drag & Toggle Handle */}
               <button
                 onClick={() => setIsSheetCollapsed(!isSheetCollapsed)}
-                className="w-full flex items-center justify-center py-1 -mt-1 mb-2 group cursor-pointer focus:outline-none"
+                className="w-full flex items-center justify-center py-0.5 -mt-1 mb-2 group cursor-pointer focus:outline-none"
                 title={isSheetCollapsed ? 'Expand panel' : 'Collapse panel'}
               >
-                <div className="w-10 h-1 rounded-full bg-[#414754] group-hover:bg-[#aac7ff] transition-colors" />
+                <div className="w-8 h-1 rounded-full bg-[#373e48] group-hover:bg-[#aac7ff] transition-colors" />
               </button>
 
               {/* Collapsed Compact State */}
               {isSheetCollapsed ? (
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                      selectedBeacon.type === 'critical' ? 'bg-[#ffb4ab] animate-pulse' : selectedBeacon.type === 'amber' ? 'bg-amber-400' : 'bg-[#3e90ff]'
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${
+                      selectedBeacon.type === 'critical' ? 'bg-[#ffb4ab]' : selectedBeacon.type === 'amber' ? 'bg-[#ffb84e]' : 'bg-[#3e90ff]'
                     }`} />
                     <div className="flex flex-col truncate">
-                      <span className="text-[14px] font-bold text-[#e5e2e1] truncate">{selectedBeacon.title}</span>
-                      <span className="text-[11px] text-[#c0c6d6]">{selectedBeacon.sector} · {selectedBeacon.distance}</span>
+                      <span className="text-sm font-semibold text-[#e6e8eb] truncate">{selectedBeacon.title}</span>
+                      <span className="text-[11px] text-[#9da4b0]">{selectedBeacon.sector} · {selectedBeacon.distance}</span>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       onClick={handleToggleNav}
-                      className={`px-3 py-1.5 rounded-xl font-semibold text-xs flex items-center gap-1 cursor-pointer ${
-                        isNavigating ? 'bg-[#00531a] text-[#6cff82]' : 'bg-[#3e90ff] text-[#002957]'
+                      className={`px-3 py-1.5 rounded-xl font-semibold text-xs flex items-center gap-1 cursor-pointer transition-colors ${
+                        isNavigating ? 'bg-[#122a1b] text-[#47e266] border border-[#245831]' : 'bg-[#3e90ff] text-[#002957] hover:bg-[#559eff]'
                       }`}
                     >
-                      <span className="material-symbols-outlined text-[16px]">near_me</span>
+                      <span className="material-symbols-outlined text-[15px]">near_me</span>
                       <span>{isNavigating ? 'Navigating' : 'Navigate'}</span>
                     </button>
                     <button
                       onClick={() => setIsSheetCollapsed(false)}
-                      className="w-8 h-8 rounded-xl bg-[#2a2a2a] text-[#e5e2e1] flex items-center justify-center cursor-pointer"
+                      className="w-7.5 h-7.5 rounded-lg bg-[#20242a] hover:bg-[#282d36] border border-[#2e333d] text-[#e6e8eb] flex items-center justify-center cursor-pointer"
                       title="Expand"
                     >
-                      <span className="material-symbols-outlined text-[18px]">expand_less</span>
+                      <span className="material-symbols-outlined text-[16px]">expand_less</span>
                     </button>
                   </div>
                 </div>
@@ -1208,34 +1290,34 @@ export const MapTab: React.FC<MapTabProps> = ({
                 /* Expanded Full State */
                 <>
                   {/* Incident Header */}
-                  <div className="flex items-start justify-between gap-2 mb-3">
+                  <div className="flex items-start justify-between gap-2 mb-2.5">
                     <div className="flex flex-col">
                       <div className="flex items-center gap-2 mb-0.5">
-                        <span className={`w-2.5 h-2.5 rounded-full ${
-                          selectedBeacon.type === 'critical' ? 'bg-[#ffb4ab] animate-pulse' : selectedBeacon.type === 'amber' ? 'bg-amber-400' : 'bg-[#3e90ff]'
+                        <span className={`w-2 h-2 rounded-full ${
+                          selectedBeacon.type === 'critical' ? 'bg-[#ffb4ab]' : selectedBeacon.type === 'amber' ? 'bg-[#ffb84e]' : 'bg-[#3e90ff]'
                         }`} />
-                        <span className="text-[17px] text-[#e5e2e1] font-bold tracking-tight">
+                        <span className="text-base text-[#e6e8eb] font-bold tracking-tight">
                           {selectedBeacon.title}
                         </span>
                       </div>
-                      <div className="flex items-center gap-1.5 text-[12px] text-[#c0c6d6]">
+                      <div className="flex items-center gap-1.5 text-xs text-[#9da4b0]">
                         <span>{selectedBeacon.sector}</span>
-                        <span className="text-[#8b91a0]">•</span>
+                        <span>•</span>
                         <span>{selectedBeacon.distance}</span>
-                        <span className="text-[#8b91a0]">•</span>
-                        <span className="text-[#e5e2e1] font-semibold">{selectedBeacon.walkTime}</span>
+                        <span>•</span>
+                        <span className="text-[#e6e8eb] font-medium">{selectedBeacon.walkTime}</span>
                       </div>
                     </div>
 
                     {/* Threat Level Indicator Pill */}
-                    <div className={`px-2 py-0.5 rounded-full flex items-center gap-1 shadow-sm shrink-0 ${
+                    <div className={`px-2 py-0.5 rounded-full flex items-center gap-1 shrink-0 border ${
                       selectedBeacon.type === 'critical'
-                        ? 'bg-[#93000a] text-[#ffdad6]'
+                        ? 'bg-[#331416] border-[#592328] text-[#ffb4ab]'
                         : selectedBeacon.type === 'amber'
-                        ? 'bg-amber-950/80 text-amber-300 border border-amber-500/40'
-                        : 'bg-[#002957] text-[#aac7ff]'
+                        ? 'bg-[#2e2110] border-[#5e411b] text-[#ffb84e]'
+                        : 'bg-[#162030] border-[#293d5c] text-[#aac7ff]'
                     }`}>
-                      <span className="material-symbols-outlined text-[13px]">
+                      <span className="material-symbols-outlined text-[12px]">
                         {selectedBeacon.type === 'critical' ? 'e911_emergency' : 'warning'}
                       </span>
                       <span className="text-[10px] font-bold uppercase tracking-wider">
@@ -1245,31 +1327,31 @@ export const MapTab: React.FC<MapTabProps> = ({
                   </div>
 
                   {/* Live Mesh Responder Status Bar */}
-                  <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#201f1f] mb-3 border border-[#2a2a2a]/60">
+                  <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#1a1d21] mb-2.5 border border-[#252830] text-xs">
                     <div className="flex items-center gap-2">
-                      <div className="flex -space-x-1.5 overflow-hidden">
+                      <div className="flex -space-x-1 overflow-hidden">
                         {selectedBeacon.responders.initials.map((init, idx) => (
                           <div
                             key={idx}
-                            className={`inline-flex h-5 w-5 rounded-full text-[10px] items-center justify-center font-bold border border-[#131313] ${
+                            className={`inline-flex h-4.5 w-4.5 rounded-full text-[9px] items-center justify-center font-bold border border-[#16181b] ${
                               idx === 0
                                 ? 'bg-[#3e90ff] text-[#002957]'
                                 : idx === 1
-                                ? 'bg-[#00a73e] text-[#00320d]'
-                                : 'bg-[#3a3939] text-[#e5e2e1]'
+                                ? 'bg-[#47e266] text-[#003912]'
+                                : 'bg-[#282d36] text-[#e6e8eb]'
                             }`}
                           >
                             {init}
                           </div>
                         ))}
                       </div>
-                      <span className="text-[12px] text-[#e5e2e1] font-medium truncate">
+                      <span className="text-xs text-[#e6e8eb] font-medium truncate">
                         {selectedBeacon.responders.countText}
                       </span>
                     </div>
                     <div className="flex items-center gap-1 text-[#47e266] text-[11px] font-medium shrink-0">
-                      <span className="material-symbols-outlined text-[15px]">signal_cellular_alt</span>
-                      <span>Mesh Sync</span>
+                      <span className="material-symbols-outlined text-[14px]">signal_cellular_alt</span>
+                      <span>Synced</span>
                     </div>
                   </div>
 
@@ -1278,59 +1360,59 @@ export const MapTab: React.FC<MapTabProps> = ({
                     {/* Main Navigation Button */}
                     <button
                       onClick={handleToggleNav}
-                      className={`flex-1 h-11 rounded-xl font-bold text-[14px] flex items-center justify-center gap-2 shadow-lg hover:brightness-110 active:scale-[0.98] transition-all cursor-pointer ${
+                      className={`flex-1 h-10 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer border ${
                         isNavigating
-                          ? 'bg-[#00531a] text-[#6cff82] shadow-[#47e266]/20'
-                          : 'bg-[#3e90ff] text-[#002957] shadow-[#3e90ff]/20'
+                          ? 'bg-[#122a1b] border-[#245831] text-[#47e266]'
+                          : 'bg-[#3e90ff] hover:bg-[#559eff] text-[#002957] border-transparent'
                       }`}
                       id="start-nav-btn"
                       type="button"
                     >
                       <span
-                        className={`material-symbols-outlined text-[18px] transition-transform ${isNavigating ? 'rotate-45' : ''}`}
+                        className={`material-symbols-outlined text-[16px] transition-transform ${isNavigating ? 'rotate-45' : ''}`}
                         style={{ fontVariationSettings: "'FILL' 1" }}
                       >
                         near_me
                       </span>
-                      <span>{isNavigating ? 'Navigating (Active)' : 'Start Offline Navigation'}</span>
+                      <span>{isNavigating ? 'Navigating (Active)' : 'Start Navigation'}</span>
                     </button>
 
                     {/* Ping / Dispatch Quick Action Button */}
                     <button
                       aria-label="Ping Responders"
                       onClick={handlePingResponders}
-                      className={`w-11 h-11 rounded-xl flex items-center justify-center active:scale-95 transition-all cursor-pointer border border-[#2a2a2a] shrink-0 ${
+                      className={`w-10 h-10 rounded-xl flex items-center justify-center active:scale-95 transition-colors cursor-pointer border border-[#2e333d] shrink-0 ${
                         pingActive
                           ? 'bg-[#47e266] text-[#003910]'
-                          : 'bg-[#2a2a2a] text-[#e5e2e1] hover:bg-[#3a3939]'
+                          : 'bg-[#20242a] text-[#e6e8eb] hover:bg-[#282d36]'
                       }`}
                       id="ping-responders-btn"
                       type="button"
                       title="Ping Responders"
                     >
-                      <span className="material-symbols-outlined text-[20px]">contactless</span>
+                      <span className="material-symbols-outlined text-[18px]">contactless</span>
                     </button>
 
                     {/* Context Share / Info Button */}
                     <button
                       aria-label="More details"
                       onClick={() => setShowInfoModal(true)}
-                      className="w-11 h-11 rounded-xl bg-[#2a2a2a] text-[#e5e2e1] flex items-center justify-center hover:bg-[#3a3939] active:scale-95 transition-all cursor-pointer border border-[#2a2a2a] shrink-0"
+                      className="w-10 h-10 rounded-xl bg-[#20242a] hover:bg-[#282d36] border border-[#2e333d] text-[#e6e8eb] flex items-center justify-center active:scale-95 transition-colors cursor-pointer shrink-0"
                       type="button"
                       title="Beacon Details"
                     >
-                      <span className="material-symbols-outlined text-[20px]">info</span>
+                      <span className="material-symbols-outlined text-[18px]">info</span>
                     </button>
 
                     {/* Quick Collapse Button */}
                     <button
                       aria-label="Collapse panel"
                       onClick={() => setIsSheetCollapsed(true)}
-                      className="w-11 h-11 rounded-xl bg-[#201f1f] text-[#8b91a0] hover:text-[#e5e2e1] flex items-center justify-center hover:bg-[#2a2a2a] active:scale-95 transition-all cursor-pointer border border-[#2a2a2a] shrink-0"
+                      className="w-10 h-10 rounded-xl bg-[#20242a] hover:bg-[#282d36] border border-[#2e333d] text-[#9da4b0] hover:text-[#e6e8eb] flex items-center justify-center active:scale-95 transition-colors cursor-pointer shrink-0"
                       type="button"
                       title="Minimize Panel"
                     >
-                      <span className="material-symbols-outlined text-[20px]">expand_more</span>
+                      <span className="material-symbols-outlined text-[18px]">expand_more</span>
                     </button>
                   </div>
                 </>
@@ -1338,14 +1420,14 @@ export const MapTab: React.FC<MapTabProps> = ({
             </>
           ) : (
             /* Standby Card when no active incidents */
-            <div className="flex items-center justify-between py-1">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-[#201f1f] flex items-center justify-center text-[#47e266]">
-                  <span className="material-symbols-outlined text-[18px]">explore</span>
+            <div className="flex items-center justify-between py-0.5">
+              <div className="flex items-center gap-2">
+                <div className="w-7.5 h-7.5 rounded-lg bg-[#1a1d21] border border-[#26292e] flex items-center justify-center text-[#47e266]">
+                  <span className="material-symbols-outlined text-[16px]">explore</span>
                 </div>
                 <div>
-                  <h4 className="text-[13px] font-bold text-[#e5e2e1]">Tactical Grid Active</h4>
-                  <p className="text-[11px] text-[#8b91a0]">
+                  <h4 className="text-xs font-bold text-[#e6e8eb]">Tactical Grid Active</h4>
+                  <p className="text-[10.5px] text-[#9da4b0]">
                     {userLocation
                       ? `GPS: ${userLocation.latitude.toFixed(4)}, ${userLocation.longitude.toFixed(4)}`
                       : 'GPS Ready · Standby for mesh beacons'}
@@ -1354,10 +1436,10 @@ export const MapTab: React.FC<MapTabProps> = ({
               </div>
               <button
                 onClick={handleRecenter}
-                className="px-3 py-1.5 rounded-xl bg-[#2a2a2a] hover:bg-[#353534] text-[#aac7ff] text-xs font-semibold flex items-center gap-1 cursor-pointer border border-[#3e90ff]/30"
+                className="px-2.5 py-1 rounded-lg bg-[#20242a] hover:bg-[#282d36] text-[#aac7ff] text-xs font-medium flex items-center gap-1 cursor-pointer border border-[#2e333d]"
               >
-                <span className="material-symbols-outlined text-[15px]">my_location</span>
-                <span>Use My Location</span>
+                <span className="material-symbols-outlined text-[14px]">my_location</span>
+                <span>Recenter</span>
               </button>
             </div>
           )}
@@ -1366,53 +1448,49 @@ export const MapTab: React.FC<MapTabProps> = ({
 
       {/* Info Details Modal */}
       {showInfoModal && (
-        <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-[#1c1b1b] border border-[#2a2a2a] rounded-3xl w-full max-w-xs p-5 shadow-2xl text-xs space-y-3 animate-in fade-in zoom-in duration-150">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-[#1a1d21] border border-[#2c3138] rounded-2xl w-full max-w-xs p-4 shadow-xl text-xs space-y-3 animate-in fade-in zoom-in duration-150">
             {selectedDemoNode ? (
               /* Demo Node Info View */
               <>
-                <div className="flex justify-between items-center border-b border-[#2a2a2a] pb-2">
+                <div className="flex justify-between items-center border-b border-[#26292e] pb-2">
                   <div className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-[#c084fc] animate-pulse" />
-                    <span className="font-bold text-[15px] text-[#e5e2e1]">{selectedDemoNode.title}</span>
+                    <span className="w-2 h-2 rounded-full bg-[#c084fc]" />
+                    <span className="font-bold text-sm text-[#e6e8eb]">{selectedDemoNode.title}</span>
                   </div>
                   <button
                     onClick={() => setShowInfoModal(false)}
-                    className="w-7 h-7 rounded-full bg-[#2a2a2a] flex items-center justify-center text-[#c0c6d6] hover:text-white cursor-pointer"
+                    className="w-6 h-6 rounded-lg bg-[#22262b] hover:bg-[#2c3138] flex items-center justify-center text-[#9da4b0] hover:text-[#e6e8eb] cursor-pointer"
                   >
-                    <span className="material-symbols-outlined text-[16px]">close</span>
+                    <span className="material-symbols-outlined text-[15px]">close</span>
                   </button>
                 </div>
-                <div className="space-y-2 text-[#c0c6d6]">
+                <div className="space-y-1.5 text-[#9da4b0]">
                   <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Classification:</span>
+                    <span>Classification:</span>
                     <span className="font-semibold text-[#d8b4fe]">Demo Node (Simulation)</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Simulated Role:</span>
-                    <span className="font-medium text-[#e5e2e1]">{selectedDemoNode.role}</span>
+                    <span>Simulated Role:</span>
+                    <span className="font-medium text-[#e6e8eb]">{selectedDemoNode.role}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Coordinates:</span>
-                    <span className="font-mono text-[#e5e2e1]">{selectedDemoNode.latitude.toFixed(6)}, {selectedDemoNode.longitude.toFixed(6)}</span>
+                    <span>Coordinates:</span>
+                    <span className="font-mono text-[#e6e8eb]">{selectedDemoNode.latitude.toFixed(5)}, {selectedDemoNode.longitude.toFixed(5)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Geographic Distance:</span>
-                    <span className="font-medium text-[#e5e2e1]">{demoNodeDistanceToAnchor} (Spatial only)</span>
+                    <span>Geographic Distance:</span>
+                    <span className="font-medium text-[#e6e8eb]">{demoNodeDistanceToAnchor}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Radio Status:</span>
-                    <span className="font-mono text-[#aac7ff]">Not participating in radio mesh</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Isolation Flag:</span>
-                    <span className="font-mono text-[#c084fc]">isDemo: true</span>
+                    <span>Radio Status:</span>
+                    <span className="font-mono text-[#aac7ff]">Simulated overlay only</span>
                   </div>
                 </div>
-                <div className="pt-2">
+                <div className="pt-1">
                   <button
                     onClick={() => setShowInfoModal(false)}
-                    className="w-full py-2.5 bg-[#2a2a2a] hover:bg-[#3a3939] text-[#e5e2e1] rounded-xl font-medium cursor-pointer"
+                    className="w-full py-2 bg-[#20242a] hover:bg-[#282d36] text-[#e6e8eb] rounded-xl font-medium cursor-pointer border border-[#2e333d]"
                   >
                     Close
                   </button>
@@ -1421,44 +1499,40 @@ export const MapTab: React.FC<MapTabProps> = ({
             ) : selectedRealPeer ? (
               /* Real Physical Peer Info View */
               <>
-                <div className="flex justify-between items-center border-b border-[#2a2a2a] pb-2">
+                <div className="flex justify-between items-center border-b border-[#26292e] pb-2">
                   <div className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-[#47e266] animate-ping" />
-                    <span className="font-bold text-[15px] text-[#e5e2e1]">{selectedRealPeer.endpointName}</span>
+                    <span className="w-2 h-2 rounded-full bg-[#47e266]" />
+                    <span className="font-bold text-sm text-[#e6e8eb]">{selectedRealPeer.endpointName}</span>
                   </div>
                   <button
                     onClick={() => setShowInfoModal(false)}
-                    className="w-7 h-7 rounded-full bg-[#2a2a2a] flex items-center justify-center text-[#c0c6d6] hover:text-white cursor-pointer"
+                    className="w-6 h-6 rounded-lg bg-[#22262b] hover:bg-[#2c3138] flex items-center justify-center text-[#9da4b0] hover:text-[#e6e8eb] cursor-pointer"
                   >
-                    <span className="material-symbols-outlined text-[16px]">close</span>
+                    <span className="material-symbols-outlined text-[15px]">close</span>
                   </button>
                 </div>
-                <div className="space-y-2 text-[#c0c6d6]">
+                <div className="space-y-1.5 text-[#9da4b0]">
                   <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Transport:</span>
-                    <span className="font-semibold text-[#47e266]">Android Nearby Connections</span>
+                    <span>Transport:</span>
+                    <span className="font-semibold text-[#47e266]">Nearby Connections</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Endpoint ID:</span>
-                    <span className="font-mono text-[#e5e2e1]">{selectedRealPeer.endpointId}</span>
+                    <span>Endpoint ID:</span>
+                    <span className="font-mono text-[#e6e8eb]">{selectedRealPeer.endpointId}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Connection State:</span>
+                    <span>Connection State:</span>
                     <span className="font-medium text-[#47e266]">{selectedRealPeer.status}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Link Visual:</span>
+                    <span>Link Style:</span>
                     <span className="font-medium text-[#47e266]">Solid Green Line</span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Data Status:</span>
-                    <span className="font-medium text-[#aac7ff]">Live Physical Radio</span>
-                  </div>
                 </div>
-                <div className="pt-2">
+                <div className="pt-1">
                   <button
                     onClick={() => setShowInfoModal(false)}
-                    className="w-full py-2.5 bg-[#2a2a2a] hover:bg-[#3a3939] text-[#e5e2e1] rounded-xl font-medium cursor-pointer"
+                    className="w-full py-2 bg-[#20242a] hover:bg-[#282d36] text-[#e6e8eb] rounded-xl font-medium cursor-pointer border border-[#2e333d]"
                   >
                     Close
                   </button>
@@ -1467,50 +1541,46 @@ export const MapTab: React.FC<MapTabProps> = ({
             ) : selectedBeacon ? (
               /* Existing Incident Info View */
               <>
-                <div className="flex justify-between items-center border-b border-[#2a2a2a] pb-2">
-                  <span className="font-bold text-[15px] text-[#e5e2e1]">{selectedBeacon.title}</span>
+                <div className="flex justify-between items-center border-b border-[#26292e] pb-2">
+                  <span className="font-bold text-sm text-[#e6e8eb]">{selectedBeacon.title}</span>
                   <button
                     onClick={() => setShowInfoModal(false)}
-                    className="w-7 h-7 rounded-full bg-[#2a2a2a] flex items-center justify-center text-[#c0c6d6] hover:text-white cursor-pointer"
+                    className="w-6 h-6 rounded-lg bg-[#22262b] hover:bg-[#2c3138] flex items-center justify-center text-[#9da4b0] hover:text-[#e6e8eb] cursor-pointer"
                   >
-                    <span className="material-symbols-outlined text-[16px]">close</span>
+                    <span className="material-symbols-outlined text-[15px]">close</span>
                   </button>
                 </div>
-                <div className="space-y-2 text-[#c0c6d6]">
+                <div className="space-y-1.5 text-[#9da4b0]">
                   <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Sector:</span>
-                    <span className="font-medium text-[#e5e2e1]">{selectedBeacon.sector}</span>
+                    <span>Sector:</span>
+                    <span className="font-medium text-[#e6e8eb]">{selectedBeacon.sector}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Classification:</span>
-                    <span className="font-medium text-[#e5e2e1]">{selectedBeacon.category}</span>
+                    <span>Classification:</span>
+                    <span className="font-medium text-[#e6e8eb]">{selectedBeacon.category}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Distance &amp; ETA:</span>
-                    <span className="font-medium text-[#e5e2e1]">{selectedBeacon.distance} ({selectedBeacon.walkTime})</span>
+                    <span>Distance &amp; ETA:</span>
+                    <span className="font-medium text-[#e6e8eb]">{selectedBeacon.distance} ({selectedBeacon.walkTime})</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Threat Rating:</span>
+                    <span>Threat Rating:</span>
                     <span className="font-semibold text-[#ffb4ab]">{selectedBeacon.threatLevel}</span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-[#8b91a0]">Encryption:</span>
-                    <span className="font-mono text-[#aac7ff]">AES-256 Mesh Local</span>
-                  </div>
                 </div>
-                <div className="pt-2 flex gap-2">
+                <div className="pt-1 flex gap-2">
                   <button
                     onClick={() => {
                       setShowInfoModal(false);
                       handleToggleNav();
                     }}
-                    className="flex-1 py-2.5 bg-[#3e90ff] hover:bg-[#3e90ff]/90 text-[#002957] rounded-xl font-bold cursor-pointer"
+                    className="flex-1 py-2 bg-[#3e90ff] hover:bg-[#559eff] text-[#002957] rounded-xl font-semibold cursor-pointer"
                   >
                     {isNavigating ? 'Stop Navigation' : 'Start Navigation'}
                   </button>
                   <button
                     onClick={() => setShowInfoModal(false)}
-                    className="px-4 py-2.5 bg-[#2a2a2a] hover:bg-[#3a3939] text-[#e5e2e1] rounded-xl font-medium cursor-pointer"
+                    className="px-3.5 py-2 bg-[#20242a] hover:bg-[#282d36] text-[#e6e8eb] rounded-xl font-medium cursor-pointer border border-[#2e333d]"
                   >
                     Close
                   </button>

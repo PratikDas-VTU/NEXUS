@@ -148,10 +148,12 @@ public class NexusNativePlugin extends Plugin {
             perms.add(Manifest.permission.BLUETOOTH_ADVERTISE);
             perms.add(Manifest.permission.BLUETOOTH_CONNECT);
             perms.add("android.permission.NEARBY_WIFI_DEVICES");
+            perms.add(Manifest.permission.ACCESS_FINE_LOCATION);
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) { // Android 12/12L (API 31-32)
             perms.add(Manifest.permission.BLUETOOTH_SCAN);
             perms.add(Manifest.permission.BLUETOOTH_ADVERTISE);
             perms.add(Manifest.permission.BLUETOOTH_CONNECT);
+            perms.add(Manifest.permission.ACCESS_FINE_LOCATION);
         } else { // Android 7.0 - 11 (API 24-30)
             perms.add(Manifest.permission.ACCESS_FINE_LOCATION);
         }
@@ -183,12 +185,35 @@ public class NexusNativePlugin extends Plugin {
 
     private String[] getRequiredPermissionAliases() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            return new String[] { "bluetooth", "nearby_wifi" };
+            return new String[] { "bluetooth", "nearby_wifi", "location" };
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            return new String[] { "bluetooth" };
+            return new String[] { "bluetooth", "location" };
         } else {
             return new String[] { "location" };
         }
+    }
+
+    @PluginMethod
+    public void requestPermissions(PluginCall call) {
+        if (hasNearbyRuntimePermissions()) {
+            JSObject ret = new JSObject();
+            ret.put("granted", true);
+            call.resolve(ret);
+            return;
+        }
+        Log.i(TAG, "[NEXUS][Nearby] Requesting runtime permissions from user...");
+        requestPermissionForAliases(getRequiredPermissionAliases(), call, "genericPermissionsCallback");
+    }
+
+    @PermissionCallback
+    private void genericPermissionsCallback(PluginCall call) {
+        JSObject ret = new JSObject();
+        boolean granted = hasNearbyRuntimePermissions();
+        ret.put("granted", granted);
+        List<String> missing = getMissingPermissions();
+        ret.put("missingPermissions", String.join(", ", missing));
+        Log.i(TAG, "[NEXUS][Nearby] Permissions callback: granted=" + granted + (missing.isEmpty() ? "" : ", missing=" + String.join(", ", missing)));
+        call.resolve(ret);
     }
 
     // ─── 1. AVAILABILITY PROBE ──────────────────────────────────────────────
@@ -209,6 +234,28 @@ public class NexusNativePlugin extends Plugin {
             call.resolve(ret);
             return;
         }
+
+        // Diagnostic permission status breakdown
+        JSObject diag = new JSObject();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            diag.put("bluetoothScan", ContextCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED ? "GRANTED" : "DENIED");
+            diag.put("bluetoothConnect", ContextCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED ? "GRANTED" : "DENIED");
+            diag.put("bluetoothAdvertise", ContextCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED ? "GRANTED" : "DENIED");
+        } else {
+            diag.put("bluetoothScan", "GRANTED");
+            diag.put("bluetoothConnect", "GRANTED");
+            diag.put("bluetoothAdvertise", "GRANTED");
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            diag.put("nearbyWifi", ContextCompat.checkSelfPermission(ctx, "android.permission.NEARBY_WIFI_DEVICES") == PackageManager.PERMISSION_GRANTED ? "GRANTED" : "DENIED");
+        } else {
+            diag.put("nearbyWifi", "NOT_REQUIRED");
+        }
+        diag.put("location", ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ? "GRANTED" : "DENIED");
+        boolean hasWifiState = ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_WIFI_STATE) == PackageManager.PERMISSION_GRANTED 
+            && ContextCompat.checkSelfPermission(ctx, Manifest.permission.CHANGE_WIFI_STATE) == PackageManager.PERMISSION_GRANTED;
+        diag.put("wifiState", hasWifiState ? "AVAILABLE" : "UNAVAILABLE");
+        ret.put("diagnostics", diag);
 
         // 1. Google Play Services availability
         GoogleApiAvailability apiAvailability = GoogleApiAvailability.getInstance();
@@ -302,7 +349,7 @@ public class NexusNativePlugin extends Plugin {
         }
 
         if (isAdvertising) {
-            Log.i(TAG, "Advertising already active for service: " + currentServiceId);
+            Log.i(TAG, "[NEXUS][Nearby] Advertising already active for service: " + currentServiceId);
             call.resolve();
             return;
         }
@@ -317,12 +364,12 @@ public class NexusNativePlugin extends Plugin {
         client.startAdvertising(finalDeviceName, finalServiceId, connectionLifecycleCallback, advertisingOptions)
             .addOnSuccessListener(unused -> {
                 isAdvertising = true;
-                Log.i(TAG, "Advertising started as '" + finalDeviceName + "' on " + finalServiceId);
+                Log.i(TAG, "[NEXUS][Nearby] Advertising started as '" + finalDeviceName + "' on " + finalServiceId);
                 call.resolve();
             })
             .addOnFailureListener(e -> {
                 isAdvertising = false;
-                Log.e(TAG, "Failed to start advertising: " + e.getMessage(), e);
+                Log.e(TAG, "[NEXUS][Nearby] Failed to start advertising: " + e.getMessage(), e);
                 call.reject("Failed to start advertising: " + e.getMessage());
             });
     }
@@ -335,9 +382,10 @@ public class NexusNativePlugin extends Plugin {
                 client.stopAdvertising();
             }
         } catch (Exception e) {
-            Log.w(TAG, "Error stopping advertising: " + e.getMessage());
+            Log.w(TAG, "[NEXUS][Nearby] Error stopping advertising: " + e.getMessage());
         } finally {
             isAdvertising = false;
+            Log.i(TAG, "[NEXUS][Nearby] Advertising stopped");
             call.resolve();
         }
     }
@@ -347,7 +395,7 @@ public class NexusNativePlugin extends Plugin {
     @PluginMethod
     public void startDiscovery(PluginCall call) {
         if (!hasNearbyRuntimePermissions()) {
-            Log.i(TAG, "Requesting missing permissions for discovery...");
+            Log.i(TAG, "[NEXUS][Nearby] Requesting missing permissions for discovery...");
             requestPermissionForAliases(getRequiredPermissionAliases(), call, "startDiscoveryPermissionCallback");
             return;
         }
@@ -379,7 +427,7 @@ public class NexusNativePlugin extends Plugin {
         this.shouldBeDiscovering = true;
 
         if (isDiscovering) {
-            Log.i(TAG, "Discovery already active for service: " + currentServiceId);
+            Log.i(TAG, "[NEXUS][Nearby] Discovery already active for service: " + currentServiceId);
             call.resolve();
             return;
         }
@@ -393,12 +441,12 @@ public class NexusNativePlugin extends Plugin {
         client.startDiscovery(finalServiceId, endpointDiscoveryCallback, discoveryOptions)
             .addOnSuccessListener(unused -> {
                 isDiscovering = true;
-                Log.i(TAG, "Discovery started on service: " + finalServiceId);
+                Log.i(TAG, "[NEXUS][Nearby] Discovery started on service: " + finalServiceId);
                 call.resolve();
             })
             .addOnFailureListener(e -> {
                 isDiscovering = false;
-                Log.e(TAG, "Failed to start discovery: " + e.getMessage(), e);
+                Log.e(TAG, "[NEXUS][Nearby] Failed to start discovery: " + e.getMessage(), e);
                 call.reject("Failed to start discovery: " + e.getMessage());
             });
     }
@@ -414,9 +462,10 @@ public class NexusNativePlugin extends Plugin {
                 client.stopDiscovery();
             }
         } catch (Exception e) {
-            Log.w(TAG, "Error stopping discovery: " + e.getMessage());
+            Log.w(TAG, "[NEXUS][Nearby] Error stopping discovery: " + e.getMessage());
         } finally {
             isDiscovering = false;
+            Log.i(TAG, "[NEXUS][Nearby] Discovery stopped");
             call.resolve();
         }
     }
@@ -426,7 +475,7 @@ public class NexusNativePlugin extends Plugin {
     private final EndpointDiscoveryCallback endpointDiscoveryCallback = new EndpointDiscoveryCallback() {
         @Override
         public void onEndpointFound(@NonNull String endpointId, @NonNull DiscoveredEndpointInfo info) {
-            Log.i(TAG, "Endpoint found: " + endpointId + " (" + info.getEndpointName() + ") service: " + info.getServiceId());
+            Log.i(TAG, "[NEXUS][Nearby] Endpoint discovered: " + endpointId + " (" + info.getEndpointName() + ") service: " + info.getServiceId());
 
             EndpointState state = new EndpointState(endpointId, info.getEndpointName(), info.getServiceId());
             discoveredEndpoints.put(endpointId, state);
@@ -440,7 +489,7 @@ public class NexusNativePlugin extends Plugin {
 
         @Override
         public void onEndpointLost(@NonNull String endpointId) {
-            Log.i(TAG, "Endpoint lost: " + endpointId);
+            Log.i(TAG, "[NEXUS][Nearby] Endpoint lost: " + endpointId);
             discoveredEndpoints.remove(endpointId);
 
             JSObject event = new JSObject();
@@ -466,7 +515,7 @@ public class NexusNativePlugin extends Plugin {
         }
 
         if (connectedEndpoints.containsKey(endpointId)) {
-            Log.i(TAG, "Endpoint " + endpointId + " is already connected");
+            Log.i(TAG, "[NEXUS][Nearby] Endpoint " + endpointId + " is already connected");
             call.resolve();
             return;
         }
@@ -484,18 +533,19 @@ public class NexusNativePlugin extends Plugin {
         // to free Bluetooth/Wi-Fi radio resources and prevent RF packet contention.
         if (isDiscovering) {
             try {
-                Log.i(TAG, "Pausing discovery to facilitate connection handshake to " + endpointId);
+                Log.i(TAG, "[NEXUS][Nearby] Pausing discovery to facilitate connection handshake to " + endpointId);
                 client.stopDiscovery();
             } catch (Exception e) {
-                Log.w(TAG, "Failed to pause discovery before connect: " + e.getMessage());
+                Log.w(TAG, "[NEXUS][Nearby] Failed to pause discovery before connect: " + e.getMessage());
             } finally {
                 isDiscovering = false;
             }
         }
 
+        Log.i(TAG, "[NEXUS][Nearby] Requesting connection to " + endpointId + " as '" + localName + "'");
         client.requestConnection(localName, endpointId, connectionLifecycleCallback)
             .addOnSuccessListener(unused -> {
-                Log.i(TAG, "requestConnection successfully sent to " + endpointId + " as '" + localName + "'");
+                Log.i(TAG, "[NEXUS][Nearby] requestConnection successfully sent to " + endpointId);
                 call.resolve();
             })
             .addOnFailureListener(e -> {
@@ -505,10 +555,10 @@ public class NexusNativePlugin extends Plugin {
 
                 String errMsg = e.getMessage() != null ? e.getMessage() : "";
                 if (connectedEndpoints.containsKey(endpointId) || errMsg.contains("8003") || errMsg.contains("ALREADY_CONNECTED")) {
-                    Log.i(TAG, "Endpoint " + endpointId + " is already connected or connecting: " + errMsg);
+                    Log.i(TAG, "[NEXUS][Nearby] Endpoint " + endpointId + " is already connected or connecting: " + errMsg);
                     call.resolve();
                 } else {
-                    Log.w(TAG, "requestConnection failed to " + endpointId + ": " + errMsg);
+                    Log.w(TAG, "[NEXUS][Nearby] requestConnection failed to " + endpointId + ": " + errMsg);
                     call.reject("Connection request failed: " + errMsg);
                 }
             });
@@ -517,10 +567,10 @@ public class NexusNativePlugin extends Plugin {
     private final ConnectionLifecycleCallback connectionLifecycleCallback = new ConnectionLifecycleCallback() {
         @Override
         public void onConnectionInitiated(@NonNull String endpointId, @NonNull ConnectionInfo connectionInfo) {
-            Log.i(TAG, "onConnectionInitiated: endpointId=" + endpointId 
-                + ", endpointName=" + connectionInfo.getEndpointName() 
-                + ", isIncoming=" + connectionInfo.isIncomingConnection()
-                + ", authDigits=" + connectionInfo.getAuthenticationDigits());
+            Log.i(TAG, "[NEXUS][Nearby] Connection initiated: " + endpointId 
+                + " (name=" + connectionInfo.getEndpointName() 
+                + ", incoming=" + connectionInfo.isIncomingConnection()
+                + ", auth=" + connectionInfo.getAuthenticationDigits() + ")");
 
             connectingEndpoints.add(endpointId);
             connectingTimestamps.put(endpointId, System.currentTimeMillis());
@@ -530,11 +580,11 @@ public class NexusNativePlugin extends Plugin {
                 try {
                     ConnectionsClient client = getClient();
                     if (client != null) {
-                        Log.i(TAG, "Pausing discovery on incoming connection handshake from " + endpointId);
+                        Log.i(TAG, "[NEXUS][Nearby] Pausing discovery on incoming connection handshake from " + endpointId);
                         client.stopDiscovery();
                     }
                 } catch (Exception e) {
-                    Log.w(TAG, "Failed to pause discovery on connectionInitiated: " + e.getMessage());
+                    Log.w(TAG, "[NEXUS][Nearby] Failed to pause discovery on connectionInitiated: " + e.getMessage());
                 } finally {
                     isDiscovering = false;
                 }
@@ -558,9 +608,9 @@ public class NexusNativePlugin extends Plugin {
             ConnectionsClient client = getClient();
             if (client != null) {
                 client.acceptConnection(endpointId, payloadCallback)
-                    .addOnSuccessListener(unused -> Log.i(TAG, "acceptConnection succeeded for " + endpointId))
+                    .addOnSuccessListener(unused -> Log.i(TAG, "[NEXUS][Nearby] acceptConnection succeeded for " + endpointId))
                     .addOnFailureListener(e -> {
-                        Log.w(TAG, "acceptConnection failed for " + endpointId + ": " + e.getMessage());
+                        Log.w(TAG, "[NEXUS][Nearby] acceptConnection failed for " + endpointId + ": " + e.getMessage());
                         connectingEndpoints.remove(endpointId);
                         connectingTimestamps.remove(endpointId);
                         resumeDiscoveryIfNecessary();
@@ -584,10 +634,6 @@ public class NexusNativePlugin extends Plugin {
             int statusCode = result.getStatus().getStatusCode();
             String statusDesc = getStatusDescription(statusCode);
             String statusMsg = result.getStatus().getStatusMessage();
-            Log.i(TAG, "onConnectionResult: endpointId=" + endpointId 
-                + ", isSuccess=" + result.getStatus().isSuccess() 
-                + ", statusCode=" + statusCode + " (" + statusDesc + ")"
-                + (statusMsg != null ? ", statusMessage=" + statusMsg : ""));
 
             JSObject event = new JSObject();
             event.put("endpointId", endpointId);
@@ -595,7 +641,7 @@ public class NexusNativePlugin extends Plugin {
             event.put("statusDescription", statusDesc);
 
             if (result.getStatus().isSuccess()) {
-                Log.i(TAG, "Connection SUCCESS with " + endpointId);
+                Log.i(TAG, "[NEXUS][Nearby] Connection result: SUCCESS (" + endpointId + ")");
                 EndpointState state = discoveredEndpoints.get(endpointId);
                 if (state == null) {
                     state = new EndpointState(endpointId, endpointId, currentServiceId);
@@ -606,7 +652,7 @@ public class NexusNativePlugin extends Plugin {
                 event.put("status", "CONNECTED");
                 event.put("message", "Nearby connection established");
             } else {
-                Log.w(TAG, "Connection failed with " + endpointId + ", code=" + statusCode + " (" + statusDesc + ")");
+                Log.w(TAG, "[NEXUS][Nearby] Connection result: FAILURE (" + endpointId + ", code=" + statusCode + " " + statusDesc + ")");
                 connectedEndpoints.remove(endpointId);
 
                 event.put("status", "REJECTED");
@@ -620,7 +666,7 @@ public class NexusNativePlugin extends Plugin {
 
         @Override
         public void onDisconnected(@NonNull String endpointId) {
-            Log.i(TAG, "Endpoint disconnected: " + endpointId);
+            Log.i(TAG, "[NEXUS][Nearby] Endpoint disconnected: " + endpointId);
             connectedEndpoints.remove(endpointId);
             discoveredEndpoints.remove(endpointId);
             connectingEndpoints.remove(endpointId);
@@ -706,9 +752,12 @@ public class NexusNativePlugin extends Plugin {
 
         Payload payload = Payload.fromBytes(bytes);
         client.sendPayload(endpointId, payload)
-            .addOnSuccessListener(unused -> call.resolve())
+            .addOnSuccessListener(unused -> {
+                Log.i(TAG, "[NEXUS][Nearby] Payload sent to " + endpointId + " (" + bytes.length + " bytes)");
+                call.resolve();
+            })
             .addOnFailureListener(e -> {
-                Log.e(TAG, "Failed to send payload to " + endpointId + ": " + e.getMessage());
+                Log.e(TAG, "[NEXUS][Nearby] Failed to send payload to " + endpointId + ": " + e.getMessage());
                 call.reject("Failed to send payload: " + e.getMessage());
             });
     }
@@ -720,22 +769,23 @@ public class NexusNativePlugin extends Plugin {
                 byte[] bytes = payload.asBytes();
                 if (bytes != null) {
                     String message = new String(bytes, StandardCharsets.UTF_8);
+                    Log.i(TAG, "[NEXUS][Nearby] Payload received from: " + endpointId + " (" + bytes.length + " bytes)");
                     JSObject event = new JSObject();
                     event.put("endpointId", endpointId);
                     event.put("payload", message);
                     notifyListeners("payloadReceived", event);
                 } else {
-                    Log.w(TAG, "Received null byte array payload from " + endpointId);
+                    Log.w(TAG, "[NEXUS][Nearby] Received null byte array payload from " + endpointId);
                 }
             } else {
-                Log.w(TAG, "Received non-byte payload type (" + payload.getType() + ") from " + endpointId + " - ignored");
+                Log.w(TAG, "[NEXUS][Nearby] Received non-byte payload type (" + payload.getType() + ") from " + endpointId + " - ignored");
             }
         }
 
         @Override
         public void onPayloadTransferUpdate(@NonNull String endpointId, @NonNull PayloadTransferUpdate update) {
             if (update.getStatus() == PayloadTransferUpdate.Status.FAILURE) {
-                Log.w(TAG, "Payload transfer failed for endpoint " + endpointId);
+                Log.w(TAG, "[NEXUS][Nearby] Payload transfer failed for endpoint " + endpointId);
             }
         }
     };
@@ -746,13 +796,14 @@ public class NexusNativePlugin extends Plugin {
     public void disconnect(PluginCall call) {
         String endpointId = call.getString("endpointId");
         if (endpointId != null && !endpointId.trim().isEmpty()) {
+            Log.i(TAG, "[NEXUS][Nearby] Disconnecting from " + endpointId);
             try {
                 ConnectionsClient client = getClient();
                 if (client != null) {
                     client.disconnectFromEndpoint(endpointId);
                 }
             } catch (Exception e) {
-                Log.w(TAG, "Error disconnecting from " + endpointId + ": " + e.getMessage());
+                Log.w(TAG, "[NEXUS][Nearby] Error disconnecting from " + endpointId + ": " + e.getMessage());
             } finally {
                 connectedEndpoints.remove(endpointId);
                 discoveredEndpoints.remove(endpointId);
@@ -781,7 +832,7 @@ public class NexusNativePlugin extends Plugin {
                 client.stopAllEndpoints();
             }
         } catch (Exception e) {
-            Log.w(TAG, "Error stopping all endpoints: " + e.getMessage());
+            Log.w(TAG, "[NEXUS][Nearby] Error stopping all endpoints: " + e.getMessage());
         } finally {
             for (String epId : connectedEndpoints.keySet()) {
                 JSObject event = new JSObject();
@@ -808,14 +859,14 @@ public class NexusNativePlugin extends Plugin {
         long now = System.currentTimeMillis();
         for (Map.Entry<String, Long> entry : connectingTimestamps.entrySet()) {
             if (now - entry.getValue() > 25000) {
-                Log.w(TAG, "Cleaning up stale handshake for " + entry.getKey());
+                Log.w(TAG, "[NEXUS][Nearby] Cleaning up stale handshake for " + entry.getKey());
                 connectingEndpoints.remove(entry.getKey());
                 connectingTimestamps.remove(entry.getKey());
             }
         }
 
         if (!connectingEndpoints.isEmpty()) {
-            Log.i(TAG, "Discovery resume deferred: " + connectingEndpoints.size() + " handshake(s) in progress (" + connectingEndpoints + ")");
+            Log.i(TAG, "[NEXUS][Nearby] Discovery resume deferred: " + connectingEndpoints.size() + " handshake(s) in progress (" + connectingEndpoints + ")");
             return;
         }
 
@@ -825,7 +876,7 @@ public class NexusNativePlugin extends Plugin {
 
         ConnectionsClient client = getClient();
         if (client == null || !hasNearbyRuntimePermissions()) {
-            Log.w(TAG, "Cannot resume discovery: client or permissions unavailable");
+            Log.w(TAG, "[NEXUS][Nearby] Cannot resume discovery: client or permissions unavailable");
             return;
         }
 
@@ -834,16 +885,16 @@ public class NexusNativePlugin extends Plugin {
             .build();
 
         final String finalServiceId = currentServiceId;
-        Log.i(TAG, "Resuming Nearby discovery on service: " + finalServiceId);
+        Log.i(TAG, "[NEXUS][Nearby] Resuming Nearby discovery on service: " + finalServiceId);
 
         client.startDiscovery(finalServiceId, endpointDiscoveryCallback, discoveryOptions)
             .addOnSuccessListener(unused -> {
                 isDiscovering = true;
-                Log.i(TAG, "Nearby discovery successfully resumed on service: " + finalServiceId);
+                Log.i(TAG, "[NEXUS][Nearby] Nearby discovery successfully resumed on service: " + finalServiceId);
             })
             .addOnFailureListener(e -> {
                 isDiscovering = false;
-                Log.w(TAG, "Failed to resume Nearby discovery: " + e.getMessage(), e);
+                Log.w(TAG, "[NEXUS][Nearby] Failed to resume Nearby discovery: " + e.getMessage(), e);
             });
     }
 

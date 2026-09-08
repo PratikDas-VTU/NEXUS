@@ -21,6 +21,7 @@ import { DEFAULT_NEXUS_SERVICE_ID } from '../../../networking/nativeTransportPro
 import { NativeTransport } from '../../../networking/nativeTransport';
 import type { RelayEngine, PeerHandshakeState } from '../../../networking/relayEngine';
 import type { MultiTransportManager } from '../../../networking/multiTransportManager';
+import { audioAlertService } from './audioAlertService';
 
 export type NearbyPreflightState =
   | 'IDLE'
@@ -101,6 +102,12 @@ export class NearbyMeshController {
       if (this.isOutgoingHandshakeInProgress) {
         this.isOutgoingHandshakeInProgress = false;
         this.processOutgoingConnectQueue();
+      }
+      // Abort in-flight native connection to free radio resources and immediately resume discovery
+      if (this.bridge) {
+        this.bridge.disconnect(endpointId).catch((err) => {
+          console.warn(`[NearbyMeshController] Error aborting timed-out connection to ${endpointId}:`, err);
+        });
       }
       const target = this.nodes.find((n) => n.endpointId === endpointId);
       if (target && target.status === 'CONNECTING') {
@@ -446,6 +453,8 @@ export class NearbyMeshController {
           };
           this.nodes.push(newNode);
           this.onToast?.(`Nearby node detected: ${newNode.endpointName}`);
+          // Play short, subtle, professional detection chirp (deduplicated per peer)
+          audioAlertService.playPeerDetectedChirp(newNode.endpointName || newNode.endpointId);
         }
         this.notify();
 
@@ -456,6 +465,11 @@ export class NearbyMeshController {
       onEndpointLost: (endpointId: string) => {
         const target = this.nodes.find((n) => n.endpointId === endpointId);
         if (!target) return;
+
+        audioAlertService.resetPeerAlert(endpointId);
+        if (target.endpointName) {
+          audioAlertService.resetPeerAlert(target.endpointName);
+        }
 
         if (target.status === 'DISCOVERED' || target.status === 'CONNECTING') {
           this.onToast?.(`Nearby node departed: ${target.endpointName}`);
@@ -552,6 +566,9 @@ export class NearbyMeshController {
             };
           });
 
+          // Play subtle, reassuring connection confirmation tone (deduplicated per session)
+          audioAlertService.playPeerConnectedTone(endpointId);
+
           // Create and register NativeTransport
           if (!this.activeTransports.has(endpointId) && this.bridge) {
             const target = this.nodes.find((n) => n.endpointId === endpointId);
@@ -624,6 +641,7 @@ export class NearbyMeshController {
         console.log(`[NearbyMeshController] onDisconnected: endpointId=${endpointId}, reason=${reason}`);
         this.clearConnectionTimeout(endpointId);
         this.pendingConnections.delete(endpointId);
+        audioAlertService.resetPeerAlert(endpointId);
 
         const qIdx = this.outgoingConnectQueue.indexOf(endpointId);
         if (qIdx !== -1) {
@@ -803,6 +821,7 @@ export class NearbyMeshController {
     this.advertising = false;
     this.isScanning = false;
     this.isStopping = false;
+    audioAlertService.clearAllPeerAlerts();
     this.onToast?.('Nearby scanning stopped');
     this.notify();
   }
@@ -916,6 +935,7 @@ export class NearbyMeshController {
 
     this.detachBridgeListeners();
     this.listeners.clear();
+    audioAlertService.clearAllPeerAlerts();
     if (this.bridge && this.isScanning) {
       this.bridge.stopDiscovery().catch(() => {});
       this.bridge.stopAdvertising().catch(() => {});

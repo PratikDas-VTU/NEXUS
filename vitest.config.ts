@@ -5,6 +5,6 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     setupFiles: ['fake-indexeddb/auto'],
-    include: ['backend/**/__tests__/**/*.test.ts', 'tests/**/*.test.ts'],
+    include: ['backend/**/__tests__/**/*.test.ts', 'tests/**/*.test.ts', 'frontend/src/**/*.test.ts'],
   },
 });

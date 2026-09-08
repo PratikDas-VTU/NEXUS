@@ -67,6 +67,8 @@ function AppContent() {
     locationError,
     requestLocation,
     setManualLocation,
+    activeVisualAlert,
+    dismissVisualAlert,
   } = useNexusServices();
 
   // First-launch location explanation prompt
@@ -328,8 +330,56 @@ function AppContent() {
         onOpenAdmin={handleOpenAdmin}
       />
 
+      {/* Visual Emergency Alert Banner (Active during P0/P1 emergency arrivals) */}
+      {activeVisualAlert && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          className={`shrink-0 z-30 px-3.5 py-2.5 flex items-center justify-between border-b shadow-lg transition-all animate-in slide-in-from-top-2 duration-200 ${
+            activeVisualAlert.priority === 'P0'
+              ? 'bg-[#2b1115] border-[#5a1c22] text-[#ffb4ab]'
+              : activeVisualAlert.priority === 'P1'
+              ? 'bg-[#2b1f11] border-[#5c4015] text-[#ffdc99]'
+              : 'bg-[#12241a] border-[#1d472c] text-[#86efac]'
+          }`}
+        >
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <span
+              className={`material-symbols-outlined text-[18px] shrink-0 animate-pulse ${
+                activeVisualAlert.priority === 'P0'
+                  ? 'text-[#ff5449]'
+                  : activeVisualAlert.priority === 'P1'
+                  ? 'text-[#f59e0b]'
+                  : 'text-[#47e266]'
+              }`}
+            >
+              {activeVisualAlert.priority === 'P0'
+                ? 'crisis_alert'
+                : activeVisualAlert.priority === 'P1'
+                ? 'warning'
+                : 'wifi_tethering'}
+            </span>
+            <div className="flex flex-col min-w-0">
+              <span className="text-[12px] font-bold tracking-tight truncate">
+                {activeVisualAlert.title}
+              </span>
+              <span className="text-[11px] opacity-85 truncate">
+                {activeVisualAlert.message}
+              </span>
+            </div>
+          </div>
+          <button
+            onClick={dismissVisualAlert}
+            aria-label="Dismiss alert"
+            className="ml-2 p-1 text-white/60 hover:text-white rounded-md transition-colors cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[16px]">close</span>
+          </button>
+        </div>
+      )}
+
       {/* Main Tab Viewport */}
-      <div className="flex-1 min-h-0 w-full flex flex-col overflow-hidden relative bg-[#131313]">
+      <div className="flex-1 min-h-0 w-full flex flex-col overflow-hidden relative bg-[#0d0e10]">
         {activeTab === 'feed' && (
           <FeedTab
             incidents={incidents}
@@ -412,10 +462,10 @@ function AppContent() {
       {toastMessage && (
         <div
           id="nexus-toast"
-          className="absolute bottom-20 left-1/2 -translate-x-1/2 z-50 bg-[#1c1b1b]/95 border border-[#3e90ff]/50 text-[#e5e2e1] text-xs font-medium px-4 py-2 rounded-full shadow-2xl backdrop-blur-md transition-all flex items-center gap-2"
+          className="absolute bottom-20 left-1/2 -translate-x-1/2 z-50 bg-[#1a1d21]/95 border border-[#2c3138] text-[#e6e8eb] text-xs font-medium px-4 py-2 rounded-full shadow-lg backdrop-blur-md transition-all flex items-center gap-2 pointer-events-none max-w-[90vw] text-center"
         >
-          <span className="w-2 h-2 rounded-full bg-[#47e266] animate-ping" />
-          <span>{toastMessage}</span>
+          <span className="w-2 h-2 rounded-full bg-[#47e266] shrink-0" />
+          <span className="truncate">{toastMessage}</span>
         </div>
       )}
     </MobileFrame>

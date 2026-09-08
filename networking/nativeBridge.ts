@@ -48,6 +48,14 @@ export interface NativeBridgeStatus {
   platform?: string;
   missingPermissions?: string;
   googlePlayServicesCode?: number;
+  diagnostics?: {
+    bluetoothScan?: string;
+    bluetoothConnect?: string;
+    bluetoothAdvertise?: string;
+    nearbyWifi?: string;
+    location?: string;
+    wifiState?: string;
+  };
 }
 
 export interface EndpointListenerCallbacks {

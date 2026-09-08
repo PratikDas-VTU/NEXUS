@@ -1,6 +1,8 @@
 package org.nexus.mesh;
 
 import android.os.Bundle;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -8,5 +10,12 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(NexusNativePlugin.class);
         super.onCreate(savedInstanceState);
+        try {
+            WebView webView = getBridge().getWebView();
+            if (webView != null) {
+                webView.getSettings().setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+            }
+        } catch (Exception ignored) {
+        }
     }
 }

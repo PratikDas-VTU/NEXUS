@@ -8,24 +8,78 @@
  * - Development & LAN configurations
  */
 
+export function normalizeSignalingUrl(input: string): string {
+  if (!input || typeof input !== 'string') return 'ws://localhost:8080';
+  let target = input.trim();
+  if (!target) return 'ws://localhost:8080';
+
+  // Check if secure was requested
+  const isSecure = target.startsWith('wss://') || target.startsWith('https://');
+
+  // Strip leading protocols
+  target = target.replace(/^(wss?|https?):\/\//i, '');
+
+  // Strip trailing URL fragments, queries, and trailing slashes
+  target = target.split('#')[0].split('?')[0];
+
+  const hasWsPath = target.endsWith('/ws');
+  if (hasWsPath) {
+    target = target.slice(0, -3);
+  }
+  target = target.replace(/\/+$/, '');
+
+  const scheme = isSecure ? 'wss://' : 'ws://';
+
+  // If port 3000 is specified (Vite dev server), always route through its /ws proxy
+  if (target.includes(':3000')) {
+    return `${scheme}${target}/ws`;
+  }
+
+  // If /ws path was explicitly present, preserve it
+  if (hasWsPath) {
+    return `${scheme}${target}/ws`;
+  }
+
+  // If custom port is specified (e.g. :8080), use it directly
+  if (/:[0-9]+$/.test(target)) {
+    return `${scheme}${target}`;
+  }
+
+  // Default port for NEXUS LAN signaler is 8080
+  return `${scheme}${target}:8080`;
+}
+
 export function getSignalingUrl(): string {
   // 1. Explicit environment variable override
   if (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_SIGNALING_URL) {
-    return (import.meta as any).env.VITE_SIGNALING_URL;
+    return normalizeSignalingUrl((import.meta as any).env.VITE_SIGNALING_URL);
   }
 
-  // 2. Dynamic host detection for local phone / LAN demonstration
-  // If running on HTTPS, route through Vite's secure WebSocket proxy on /ws (port 3000)
-  // to eliminate mixed-content blocking in mobile Chrome!
+  // 2. User configured custom URL from localStorage (e.g. for Capacitor Android APK or companion testing)
+  if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+    try {
+      const custom = localStorage.getItem('nexus_custom_signaling_url');
+      if (custom && custom.trim().length > 0) {
+        return normalizeSignalingUrl(custom.trim());
+      }
+    } catch {}
+  }
+
+  // 3. Dynamic host detection for local phone / LAN demonstration
+  // If running in browser over LAN (e.g. http://11.12.21.234:3000)
   if (typeof window !== 'undefined' && window.location?.hostname) {
-    if (window.location.protocol === 'https:') {
-      return `wss://${window.location.host}/ws`;
-    }
     const host = window.location.hostname;
-    return `ws://${host}:8080`;
+    // Exclude localhost/127.0.0.1 in mobile/Capacitor unless on desktop
+    if (host !== 'localhost' && host !== '127.0.0.1') {
+      if (window.location.protocol === 'https:' || window.location.port === '3000') {
+        const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        return `${proto}://${window.location.host}/ws`;
+      }
+      return `ws://${host}:8080`;
+    }
   }
 
-  // 3. Safe fallback for server/test environments
+  // 4. Safe fallback for server/test environments
   return 'ws://localhost:8080';
 }
 
@@ -75,7 +129,9 @@ export function getMapTileConfig(layer: 'dark' | 'street' = 'dark'): {
 }
 
 export const API_CONFIG = {
-  signalingUrl: getSignalingUrl(),
+  get signalingUrl() {
+    return getSignalingUrl();
+  },
   signalingPort: 8080,
   defaultTtlMs: 86_400_000, // 24 hours
   maxRelayHops: 3,

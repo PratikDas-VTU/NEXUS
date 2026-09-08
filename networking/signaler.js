@@ -83,6 +83,10 @@ function createFrameParser(onMessage, onClose) {
 
       // Close frame (opcode 8)
       if (opcode === 0x08) {
+        try {
+          socket.write(Buffer.from([0x88, 0x00]));
+          socket.end();
+        } catch {}
         onClose();
         return;
       }
@@ -200,6 +204,7 @@ server.on('upgrade', (req, socket, head) => {
 
   const rawIp = socket.remoteAddress || req.socket?.remoteAddress || '127.0.0.1';
   const remoteIp = rawIp.replace(/^.*:/, '');
+  console.log(`[Signaler] 🔌 HTTP Upgrade (WebSocket) handshake from ${remoteIp}`);
 
   // RFC 6455 Handshake
   const hash = crypto

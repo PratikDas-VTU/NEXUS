@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AdminUser } from './types';
+import { useNexusServices } from '../context/ServiceContext';
 
 interface AdminHeaderProps {
   user: AdminUser;
@@ -16,6 +17,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
   isInternetConnected,
   onToggleInternet,
 }) => {
+  const { isAudioMuted, toggleAudioMute } = useNexusServices();
   const [timeString, setTimeString] = useState('');
 
   useEffect(() => {
@@ -81,6 +83,22 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
             {isInternetConnected ? 'Cloud Online' : 'Zero-Internet Mesh'}
           </span>
           <span className="sm:hidden">{isInternetConnected ? 'Online' : 'Offline'}</span>
+        </button>
+
+        {/* Audio Alert Toggle */}
+        <button
+          onClick={toggleAudioMute}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+            isAudioMuted
+              ? 'bg-[#222] border-[#333] text-[#8b91a0]'
+              : 'bg-[#142e1d] border-[#2f6f3a] text-[#47e266]'
+          }`}
+          title={isAudioMuted ? 'Alert sounds muted (click to unmute)' : 'Alert sounds active (click to mute)'}
+        >
+          <span className="material-symbols-outlined text-[15px]">
+            {isAudioMuted ? 'volume_off' : 'volume_up'}
+          </span>
+          <span className="hidden sm:inline">{isAudioMuted ? 'Muted' : 'Sound On'}</span>
         </button>
 
         {/* Switch to Field Mobile View */}

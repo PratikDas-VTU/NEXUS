@@ -203,7 +203,10 @@ export class NetworkCoordinator {
   }
 
   public async start(customUrl?: string): Promise<void> {
-    if (this.isStarted) return;
+    if (this.isStarted && (!customUrl || customUrl === this.signalingUrl)) return;
+    if (this.isStarted) {
+      await this.stop();
+    }
     this.isStarted = true;
 
     for (const provider of this.providers) {
@@ -219,12 +222,23 @@ export class NetworkCoordinator {
     this.log('info', `Connecting to signaling server at ${url}...`);
 
     try {
+      if (this.signalingClient) {
+        this.signalingClient.disconnect();
+        this.signalingClient = null;
+      }
+
       this.signalingClient = new SignalingClient({
         serverUrl: url,
         peerId: this.deviceId,
         deviceId: this.deviceId,
         autoReconnect: true,
+        onLog: (level, msg) => this.log(level, msg),
       });
+
+      this.signalingClient.onConnecting = () => {
+        this.signalingState = 'CONNECTING';
+        this.notifyDiagnostics();
+      };
 
       // Inject active signaling client into WebRTC provider
       this.webRtcProvider.setSignalingClient(this.signalingClient);

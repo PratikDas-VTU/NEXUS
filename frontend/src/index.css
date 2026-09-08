@@ -1,35 +1,35 @@
 @import "tailwindcss";
 
 @theme {
-  --color-surface: #131313;
-  --color-surface-dim: #131313;
-  --color-surface-bright: #3a3939;
-  --color-surface-container-lowest: #0e0e0e;
-  --color-surface-container-low: #1c1b1b;
-  --color-surface-container: #201f1f;
-  --color-surface-container-high: #2a2a2a;
-  --color-surface-container-highest: #353534;
-  --color-surface-variant: #353534;
-  --color-on-surface: #e5e2e1;
-  --color-on-surface-variant: #c0c6d6;
-  --color-outline: #8b91a0;
-  --color-outline-variant: #414754;
+  --color-surface: #121417;
+  --color-surface-dim: #0d0e10;
+  --color-surface-bright: #2d3139;
+  --color-surface-container-lowest: #090a0c;
+  --color-surface-container-low: #15171a;
+  --color-surface-container: #1a1d21;
+  --color-surface-container-high: #22262b;
+  --color-surface-container-highest: #2c3138;
+  --color-surface-variant: #2c3138;
+  --color-on-surface: #e6e8eb;
+  --color-on-surface-variant: #9da4b0;
+  --color-outline: #6b7280;
+  --color-outline-variant: #373e48;
   --color-primary: #aac7ff;
   --color-primary-container: #3e90ff;
-  --color-on-primary: #003064;
-  --color-on-primary-container: #002957;
-  --color-secondary: #c6c6c7;
-  --color-secondary-container: #454747;
-  --color-on-secondary: #2f3131;
+  --color-on-primary: #002957;
+  --color-on-primary-container: #d9e2ff;
+  --color-secondary: #c4c7cc;
+  --color-secondary-container: #3d424a;
+  --color-on-secondary: #272a2f;
   --color-tertiary: #47e266;
-  --color-tertiary-container: #00a73e;
-  --color-on-tertiary: #003910;
+  --color-tertiary-container: #1b4d29;
+  --color-on-tertiary: #003912;
   --color-error: #ffb4ab;
   --color-error-container: #93000a;
   --color-on-error: #690005;
   --color-on-error-container: #ffdad6;
 
-  --spacing-margin-mobile: 1.25rem;
+  --spacing-margin-mobile: 1rem;
   --spacing-gutter-mobile: 0.75rem;
   --spacing-space-2xs: 0.25rem;
   --spacing-space-xs: 0.5rem;
@@ -38,21 +38,20 @@
   --spacing-space-lg: 1.25rem;
   --spacing-space-xl: 1.5rem;
   --spacing-space-2xl: 2rem;
-  --spacing-space-3xl: 2.5rem;
-  --spacing-space-4xl: 3.5rem;
 }
 
 @layer base {
   html, body {
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background-color: #0c0d0e;
-    color: #e5e2e1;
+    background-color: #0d0e10;
+    color: #e6e8eb;
     margin: 0;
     padding: 0;
     width: 100%;
     height: 100%;
     min-height: 100dvh;
     overflow-x: hidden;
+    -webkit-tap-highlight-color: transparent;
   }
   #root {
     width: 100%;
@@ -60,6 +59,7 @@
     min-height: 100dvh;
     display: flex;
     flex-direction: column;
+    background-color: #0d0e10;
   }
 }
 
@@ -134,4 +134,71 @@
   border: none !important;
 }
 
+/* NEXUS Design System Utilities */
+.nexus-card {
+  background-color: #16181b;
+  border: 1px solid #252830;
+  border-radius: 1rem;
+}
 
+.nexus-card-elevated {
+  background-color: #1a1d22;
+  border: 1px solid #2d323c;
+  border-radius: 1rem;
+}
+
+.nexus-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  border-radius: 0.75rem;
+  background-color: #3e90ff;
+  color: #002957;
+  transition: all 0.15s ease-in-out;
+  cursor: pointer;
+}
+.nexus-btn-primary:hover {
+  background-color: #559eff;
+}
+.nexus-btn-primary:active {
+  transform: scale(0.98);
+}
+
+.nexus-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 500;
+  border-radius: 0.75rem;
+  background-color: #20242a;
+  border: 1px solid #2e333d;
+  color: #e6e8eb;
+  transition: all 0.15s ease-in-out;
+  cursor: pointer;
+}
+.nexus-btn-secondary:hover {
+  background-color: #282d36;
+  border-color: #3a414d;
+}
+.nexus-btn-secondary:active {
+  transform: scale(0.98);
+}
+
+.nexus-btn-emergency {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  border-radius: 0.75rem;
+  background-color: #ffb4ab;
+  color: #690005;
+  transition: all 0.15s ease-in-out;
+  cursor: pointer;
+}
+.nexus-btn-emergency:hover {
+  background-color: #ffc4bd;
+}
+.nexus-btn-emergency:active {
+  transform: scale(0.98);
+}

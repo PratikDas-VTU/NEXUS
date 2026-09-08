@@ -30,6 +30,7 @@ import {
   releaseScreenWakeLock,
   testBluetoothDeviceScan,
 } from '../services/api/permissions';
+import { audioAlertService, type VisualAlertEvent } from '../services/audioAlertService';
 
 interface ServiceContextValue {
   incidentService: IFrontendIncidentService;
@@ -47,6 +48,16 @@ interface ServiceContextValue {
   refreshOutboxCount: () => Promise<void>;
   purgeDemoData: (broadcast?: boolean) => Promise<void>;
   toggleInternet: (enable: boolean) => Promise<void>;
+
+  // Tactical Alert & Web Audio System (Web Audio API, Deduplicated)
+  isAudioMuted: boolean;
+  toggleAudioMute: () => boolean;
+  playEmergencyChime: (priority?: 'P0' | 'P1') => boolean;
+  playPeerDetectedChirp: (peerId?: string) => boolean;
+  playPeerConnectedTone: (peerId?: string) => boolean;
+  unlockAudio: () => boolean;
+  activeVisualAlert: VisualAlertEvent | null;
+  dismissVisualAlert: () => void;
 
   // Location Core
   currentLocation: GeolocationCoordinates | null;
@@ -97,6 +108,69 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [currentLocation, setCurrentLocation] = useState<GeolocationCoordinates | null>(initialCachedLocation);
   const [locationState, setLocationState] = useState<LocationState>(initialCachedLocation ? 'CACHED' : 'IDLE');
   const [locationError, setLocationError] = useState<string | null>(null);
+
+  // Audio Alert System State
+  const [isAudioMuted, setIsAudioMuted] = useState<boolean>(() => audioAlertService.getIsMuted());
+
+  useEffect(() => {
+    const unsub = audioAlertService.subscribeMuteState((muted) => {
+      setIsAudioMuted(muted);
+    });
+    return unsub;
+  }, []);
+
+  // Unlock AudioContext automatically on first user interaction anywhere on screen
+  useEffect(() => {
+    const handleFirstGesture = () => {
+      audioAlertService.unlockAudio();
+      window.removeEventListener('pointerdown', handleFirstGesture);
+      window.removeEventListener('keydown', handleFirstGesture);
+    };
+
+    window.addEventListener('pointerdown', handleFirstGesture, { once: true });
+    window.addEventListener('keydown', handleFirstGesture, { once: true });
+
+    return () => {
+      window.removeEventListener('pointerdown', handleFirstGesture);
+      window.removeEventListener('keydown', handleFirstGesture);
+    };
+  }, []);
+
+  const [activeVisualAlert, setActiveVisualAlert] = useState<VisualAlertEvent | null>(null);
+
+  useEffect(() => {
+    const unsub = audioAlertService.subscribeVisualAlert((event) => {
+      setActiveVisualAlert(event);
+      setTimeout(() => {
+        setActiveVisualAlert((curr) => (curr?.id === event.id ? null : curr));
+      }, 6000);
+    });
+    return unsub;
+  }, []);
+
+  const dismissVisualAlert = useCallback(() => {
+    setActiveVisualAlert(null);
+  }, []);
+
+  const toggleAudioMute = useCallback(() => {
+    return audioAlertService.toggleMuted();
+  }, []);
+
+  const playEmergencyChime = useCallback((priority: 'P0' | 'P1' = 'P0') => {
+    return audioAlertService.playEmergencyChime(priority);
+  }, []);
+
+  const playPeerDetectedChirp = useCallback((peerId?: string) => {
+    return audioAlertService.playPeerDetectedChirp(peerId);
+  }, []);
+
+  const playPeerConnectedTone = useCallback((peerId?: string) => {
+    return audioAlertService.playPeerConnectedTone(peerId);
+  }, []);
+
+  const unlockAudio = useCallback(() => {
+    return audioAlertService.unlockAudio();
+  }, []);
 
   // Permissions state
   const [permissions, setPermissions] = useState<DevicePermissionsStatus>({
@@ -244,7 +318,9 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return () => clearInterval(interval);
   }, [refreshIncidents]);
 
-  // 3. Subscribe to real Dexie incidents liveQuery
+  // 3. Subscribe to real Dexie incidents liveQuery with persistent audio alert deduplication
+  const initialIncidentsSeededRef = useRef<boolean>(false);
+
   useEffect(() => {
     let isSubscribed = true;
 
@@ -256,6 +332,17 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const viewModels = items.map((inc) => incidentToViewModel(inc));
       setIncidents(viewModels);
       refreshOutboxCount();
+
+      // Startup Seeding: Seed pre-existing incidents so reopening app never replays old alerts
+      if (!initialIncidentsSeededRef.current) {
+        audioAlertService.seedSeenIncidents(items.map((i) => (i as any).id || i.incidentId));
+        initialIncidentsSeededRef.current = true;
+      } else {
+        // Live Incoming Monitoring: trigger audio chime for newly received P0/P1 incidents
+        for (const item of items) {
+          audioAlertService.handleIncomingIncident(item);
+        }
+      }
     });
 
     return () => {
@@ -437,6 +524,8 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const createIncident = async (draft: DraftIncident): Promise<Incident> => {
     const inc = await incidentService.createIncident(draft);
     await refreshIncidents();
+    // Audible Emergency Alert for newly created P0/P1 emergency
+    audioAlertService.handleIncomingIncident(inc);
     // Trigger immediate peer synchronization across all active transports (Nearby + WebRTC + WebSocket)
     networkService.triggerPeerSync().catch((err) => {
       console.warn('[ServiceProvider] Peer sync after incident creation failed:', err);
@@ -473,6 +562,16 @@ export const ServiceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     refreshOutboxCount,
     purgeDemoData,
     toggleInternet,
+
+    // Audible Emergency Alert System
+    isAudioMuted,
+    toggleAudioMute,
+    playEmergencyChime,
+    playPeerDetectedChirp,
+    playPeerConnectedTone,
+    unlockAudio,
+    activeVisualAlert,
+    dismissVisualAlert,
 
     // Hardware & Network Diagnostics
     networkDiagnostics,

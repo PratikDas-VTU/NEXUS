@@ -21,6 +21,7 @@ export interface SignalingClientOptions {
   peerId: string;
   deviceId: DeviceId;
   autoReconnect?: boolean;
+  onLog?: (level: 'info' | 'warn' | 'error', message: string) => void;
 }
 
 export type PeerListHandler = (peers: PeerDescriptor[]) => void;
@@ -37,6 +38,7 @@ export class SignalingClient {
   private options: SignalingClientOptions;
   private isExplicitlyClosed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
 
   // Event handlers
   public onPeerList?: PeerListHandler;
@@ -47,14 +49,67 @@ export class SignalingClient {
   public onCandidate?: CandidateHandler;
   public onRelayMessage?: RelayMessageHandler;
   public onStateChange?: ConnectionStateChangeHandler;
+  public onConnecting?: (url: string) => void;
   public onPurgeAll?: (fromPeerId?: string, reason?: string) => void;
 
   constructor(options: SignalingClientOptions) {
     this.options = { autoReconnect: true, ...options };
+    this.log('info', `SIGNALER_URL: Initialized target ${this.options.serverUrl}`);
+  }
+
+  public log(level: 'info' | 'warn' | 'error', message: string): void {
+    if (this.options.onLog) {
+      this.options.onLog(level, message);
+    }
+    const formatted = `[SignalingClient] ${message}`;
+    if (level === 'error') {
+      console.error(formatted);
+    } else if (level === 'warn') {
+      console.warn(formatted);
+    } else {
+      console.log(formatted);
+    }
+  }
+
+  public getReadyStateName(): string {
+    if (!this.socket) return 'CLOSED';
+    switch (this.socket.readyState) {
+      case 0: return 'CONNECTING';
+      case 1: return 'OPEN';
+      case 2: return 'CLOSING';
+      case 3: return 'CLOSED';
+      default: return 'UNKNOWN';
+    }
+  }
+
+  public setServerUrl(newUrl: string): void {
+    if (this.options.serverUrl === newUrl) return;
+    this.options.serverUrl = newUrl;
+    this.log('info', `SIGNALER_URL: Updated target ${newUrl}`);
+  }
+
+  public getServerUrl(): string {
+    return this.options.serverUrl;
   }
 
   public connect(): Promise<void> {
     this.isExplicitlyClosed = false;
+
+    // Clean up any lingering socket before creating a new one
+    if (this.socket) {
+      try {
+        this.socket.onopen = null;
+        this.socket.onerror = null;
+        this.socket.onclose = null;
+        this.socket.onmessage = null;
+        this.socket.close();
+      } catch {}
+      this.socket = null;
+    }
+
+    this.reconnectAttempts++;
+    this.onConnecting?.(this.options.serverUrl);
+    this.log('info', `CONNECT_ATTEMPT: Target ${this.options.serverUrl} (attempt #${this.reconnectAttempts})`);
 
     return new Promise((resolve, reject) => {
       try {
@@ -64,12 +119,32 @@ export class SignalingClient {
             : (globalThis as unknown as { WebSocket: typeof WebSocket }).WebSocket;
 
         if (!WebSocketImpl) {
-          throw new Error('WebSocket environment not available');
+          const err = new Error('WebSocket environment not available');
+          this.log('error', `CONNECT_ERROR: ${err.message}`);
+          throw err;
         }
 
-        this.socket = new WebSocketImpl(this.options.serverUrl);
+        const currentSocket = new WebSocketImpl(this.options.serverUrl);
+        this.socket = currentSocket;
 
-        this.socket.onopen = () => {
+        let isSettled = false;
+        const safeResolve = () => {
+          if (!isSettled) {
+            isSettled = true;
+            resolve();
+          }
+        };
+        const safeReject = (err: Error) => {
+          if (!isSettled) {
+            isSettled = true;
+            reject(err);
+          }
+        };
+
+        currentSocket.onopen = () => {
+          if (this.socket !== currentSocket) return;
+          this.reconnectAttempts = 0;
+          this.log('info', `CONNECT_OPEN: Successfully connected to ${this.options.serverUrl}`);
           this.onStateChange?.(true);
 
           // Announce presence with SIGNAL_JOIN
@@ -80,32 +155,45 @@ export class SignalingClient {
             timestamp: Date.now(),
           });
 
-          resolve();
+          safeResolve();
         };
 
-        this.socket.onmessage = (event: MessageEvent) => {
+        currentSocket.onmessage = (event: MessageEvent) => {
+          if (this.socket !== currentSocket) return;
           try {
             const data = typeof event.data === 'string' ? event.data : event.data.toString();
             const msg: SignalingMessage = JSON.parse(data);
             this.handleSignalingMessage(msg);
           } catch (err) {
-            console.warn('[SignalingClient] Failed to parse signaling payload:', err);
+            this.log('warn', `Failed to parse signaling payload: ${err}`);
           }
         };
 
-        this.socket.onerror = (err) => {
-          console.warn('[SignalingClient] Connection error on:', this.options.serverUrl);
+        currentSocket.onerror = (err: any) => {
+          if (this.socket !== currentSocket) return;
+          const state = this.getReadyStateName();
+          const detail = err?.message || (err?.type ? `event: ${err.type}` : 'socket error');
+          this.log('warn', `CONNECT_ERROR: Error on ${this.options.serverUrl} (readyState: ${state}, detail: ${detail})`);
           this.onStateChange?.(false);
+          safeReject(new Error(`WebSocket connection error on ${this.options.serverUrl} (state: ${state})`));
         };
 
-        this.socket.onclose = () => {
+        currentSocket.onclose = (event: CloseEvent | any) => {
+          if (this.socket === currentSocket) {
+            this.socket = null;
+          }
+          const code = event?.code ?? 1006;
+          const reason = event?.reason || 'none';
+          const clean = event?.wasClean ?? false;
+          this.log('warn', `CONNECT_CLOSE: Closed on ${this.options.serverUrl} (code: ${code}, reason: '${reason}', clean: ${clean})`);
           this.onStateChange?.(false);
-          this.socket = null;
+          safeReject(new Error(`WebSocket closed on ${this.options.serverUrl} (code: ${code})`));
           if (!this.isExplicitlyClosed && this.options.autoReconnect) {
             this.scheduleReconnect();
           }
         };
-      } catch (err) {
+      } catch (err: any) {
+        this.log('error', `CONNECT_ERROR: Immediate failure on ${this.options.serverUrl}: ${err?.message || err}`);
         reject(err);
       }
     });
@@ -118,7 +206,13 @@ export class SignalingClient {
       this.reconnectTimer = null;
     }
     if (this.socket) {
-      this.socket.close();
+      try {
+        this.socket.onopen = null;
+        this.socket.onerror = null;
+        this.socket.onclose = null;
+        this.socket.onmessage = null;
+        this.socket.close(1000, 'Client disconnected');
+      } catch {}
       this.socket = null;
     }
     this.onStateChange?.(false);
@@ -223,11 +317,14 @@ export class SignalingClient {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return;
+    const delay = Math.min(1000 * Math.pow(1.3, Math.min(this.reconnectAttempts, 5)), 4000);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.isExplicitlyClosed) {
-        this.connect().catch(() => {});
+        this.connect().catch((err) => {
+          this.log('warn', `Reconnect attempt failed on ${this.options.serverUrl}: ${err?.message || err}`);
+        });
       }
-    }, 3000);
+    }, delay);
   }
 }

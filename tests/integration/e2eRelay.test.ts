@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NexusDatabase } from '../../backend/data/db';
 import { OfflineStorageAdapter } from '../../backend/data/adapter';
 import { FrontendIncidentService } from '../../backend/data/incidentService';
@@ -6,6 +6,7 @@ import { RelayEngine } from '../../networking/relayEngine';
 import type { ITransport } from '../../shared/interfaces';
 import type { RelayMessage } from '../../shared/protocol';
 import type { Incident, DraftIncident } from '../../shared/types';
+import { audioAlertService } from '../../frontend/src/services/audioAlertService';
 
 /**
  * Direct in-memory simulated paired transport for headless testing
@@ -284,5 +285,66 @@ describe('STAGE 7: End-to-End Multi-Node Peer Relay & Reactive Data Core', () =>
     await delay(50);
     expect((await serviceA.listIncidents()).length).toBe(0);
     expect((await serviceB.listIncidents()).length).toBe(0);
+  });
+
+  it('verifies incoming real P0 emergency triggers reactive storage update and audio chime on Node B', async () => {
+    // Spies on audioAlertService chime
+    const chimeSpy = vi.spyOn(audioAlertService, 'playEmergencyChime');
+
+    // 1. Setup subscription on Node B (mimicking ServiceContext / Admin Hub)
+    const nodeBIncidents: Incident[] = [];
+    const unsubB = serviceB.subscribeToIncidents((incidents) => {
+      nodeBIncidents.length = 0;
+      nodeBIncidents.push(...incidents);
+      // ServiceContext live incoming monitoring
+      for (const inc of incidents) {
+        audioAlertService.handleIncomingIncident(inc);
+      }
+    });
+
+    await delay(30);
+
+    // 2. Field Phone (Node A) broadcasts P0 Emergency
+    const phoneEmergency: DraftIncident = {
+      type: 'medical',
+      priority: 'P0',
+      latitude: 13.2384,
+      longitude: 80.0094,
+      peopleAffected: 3,
+      description: 'Critical distress beacon from field phone',
+    };
+
+    const createdOnPhone = await serviceA.createIncident(phoneEmergency);
+    expect(createdOnPhone.incidentId).toBeDefined();
+
+    // 3. Connect Phone (Node A) to Laptop (Node B)
+    engineA.registerTransport(transportA);
+    engineB.registerTransport(transportB);
+
+    // Allow protocol state machine exchange
+    await delay(120);
+
+    // 4. Verify Node B (Laptop) has the emergency in Dexie
+    const laptopStored = await serviceB.getIncident(createdOnPhone.incidentId);
+    expect(laptopStored).toBeDefined();
+    expect(laptopStored?.incidentId).toBe(createdOnPhone.incidentId);
+    expect(laptopStored?.priority).toBe('P0');
+    expect(laptopStored?.hopCount).toBe(1);
+
+    // 5. Verify Node B reactive subscription received it
+    expect(nodeBIncidents.length).toBe(1);
+    expect(nodeBIncidents[0].incidentId).toBe(createdOnPhone.incidentId);
+
+    // 6. Verify Audio Alert Service fired for P0
+    expect(chimeSpy).toHaveBeenCalledWith('P0');
+
+    // 7. Verify subsequent sync does NOT duplicate chime (persistent deduplication)
+    chimeSpy.mockClear();
+    await engineB.triggerPeerSync();
+    await delay(50);
+    expect(chimeSpy).not.toHaveBeenCalled();
+
+    chimeSpy.mockRestore();
+    unsubB();
   });
 });

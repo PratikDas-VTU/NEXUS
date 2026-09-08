@@ -50,3 +50,16 @@ export interface AdminAuditLog {
   category: 'broadcast' | 'dispatch' | 'security' | 'mesh';
   severity: 'info' | 'warn' | 'critical';
 }
+
+export type AlertLifecycleStatus = 'new' | 'acknowledged' | 'active' | 'resolved';
+
+export type GPSQualityLevel = 'live' | 'low_accuracy' | 'cached' | 'unavailable';
+
+export interface NodeDensityCluster {
+  id: string;
+  centerLat: number;
+  centerLng: number;
+  radiusMeters: number;
+  nodeCount: number;
+  nodeIds: string[];
+}
